@@ -21,29 +21,37 @@ EXPORT ndArray := MODULE
     * Extract an inner ndArray (sub-array) from an existing ndArray
     * Work-item = 0 (default) will extract all work-items
     */
-  EXPORT DATASET(NumericArray) Extract(DATASET(NumericArray) tens,
+  EXPORT DATASET(NumericArray) Extract(DATASET(NumericArray) arr,
                                        t_indexes fromIndx, t_work_item fromWi=0) := FUNCTION
-    NumericArray extract_indexes(NumericArray t, UNSIGNED prefixSize) := TRANSFORM
-      outIndex := t.indexes[prefixSize+1.. ];
+    NumericArray extract_indexes(NumericArray a, UNSIGNED prefixSize) := TRANSFORM
+      outIndex := a.indexes[prefixSize+1.. ];
       SELF.indexes := outIndex;
-      SELF         := t;
+      SELF         := a;
     END;
     prefixSize := COUNT(fromIndx);
-    indxFilter := tens.indexes[..prefixSize] = fromIndx;
-    filter     := IF(fromWi = 0, indxFilter, indxFilter AND tens.wi = fromWi);
-    outTens    := PROJECT(tens(filter), extract_indexes(LEFT, prefixSize));
-    return outTens;
+    filter := arr.indexes[..prefixSize] = fromIndx AND (fromWi = 0 OR arr.wi = fromWi);
+    outNA    := PROJECT(arr(filter), extract_indexes(LEFT, prefixSize));
+    return outNA;
+  END;
+  /**
+    * Extend the indices of a Numeric Array to fit within a deeper array
+    *
+    * For example, a cell with index [1,2] could be moved to index [1,2,3,1,2]
+    */
+  EXPORT DATASET(NumericArray) ExtendIndices(DATASET(NumericArray) arr1, t_indexes atIndex) := FUNCTION
+    NumericArray extend_indexes(NumericArray t) := TRANSFORM
+      indxs := atIndex + t.indexes;
+      SELF.indexes := indxs;
+      SELF         := t;
+    END;
+    outArr := PROJECT(arr1, extend_indexes(LEFT));
+    return outArr;
   END;
   /**
     * Insert an ndArray (sub-array) into an existing ndArray
     */
   EXPORT DATASET(NumericArray) Insert(DATASET(NumericArray) arr1, DATASET(NumericArray) arr2, t_indexes atIndx) := FUNCTION
-    NumericArray extend_indexes(NumericArray t) := TRANSFORM
-      indxs := atIndx + t.indexes;
-      SELF.indexes := indxs;
-      SELF         := t;
-    END;
-    arr2a := PROJECT(arr2, extend_indexes(LEFT));
+    arr2a := ExtendIndices(arr2, atIndx);
     return arr1 + arr2a;
   END;
   /**
@@ -59,7 +67,9 @@ EXPORT ndArray := MODULE
     END;
     prefixSize := COUNT(fromIndx);
     filter := arr.indexes[..prefixSize] = fromIndx;
-    outNF := PROJECT(arr(filter), array_to_nf(LEFT));
+    outCells := ASSERT(arr(filter), COUNT(indexes) = prefixSize + 2, 'ndArray.ToNumericField: Extracted indexes must be exactly 2 dimensional.  Found '
+                                       + (COUNT(indexes) - prefixSize), FAIL);
+    outNF := PROJECT(outCells, array_to_nf(LEFT));
     return outNF;
   END;
   /**

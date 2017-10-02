@@ -3,7 +3,7 @@ IMPORT LT.LT_Types as Types;
 IMPORT ML_Core as ML;
 IMPORT ML.Types AS CTypes;
 IMPORT std.system.Thorlib;
-IMPORT ndArray;
+IMPORT LT.ndArray;
 
 GenField := Types.GenField;
 ModelStats := Types.ModelStats;
@@ -16,6 +16,7 @@ Layout_Model := CTypes.Layout_Model;
 wiInfo := Types.wiInfo;
 TreeNodeDat := Types.TreeNodeDat;
 NumericField := CTypes.NumericField;
+DiscreteField := CTypes.DiscreteField;
 Layout_Model2 := Types.Layout_Model2;
 rfModInd1 := Types.rfModInd1;
 rfModNodes3 := Types.rfModNodes3;
@@ -32,6 +33,7 @@ EXPORT RF_Base(DATASET(GenField) X_in,
               UNSIGNED maxDepth=255) := MODULE, VIRTUAL
   SHARED autoBin := TRUE;
   SHARED autobinSize := 10;
+  SHARED autobinSizeScald := autobinSize * 4294967295;
 
   SHARED X0 := DISTRIBUTE(X_in, HASH32(wi, id));
   SHARED Y := DISTRIBUTE(Y_in, HASH32(wi, id));
@@ -40,7 +42,7 @@ EXPORT RF_Base(DATASET(GenField) X_in,
 
   // P log P calculation for entropy.  Note that Shannon entropy uses log base 2 so the division by LOG(2) is
   // to convert the base from 10 to 2.
-  SHARED P_Log_P(REAL P) := IF(P=1, 0, -P*LOG(P)/LOG(2));
+  SHARED P_Log_P(REAL P) := IF(P=1, 0, -P* LN(P) / LN(2));
 
   SHARED empty_model := DATASET([], Layout_Model2);
 
@@ -58,8 +60,6 @@ EXPORT RF_Base(DATASET(GenField) X_in,
     SELF := lr;
   END;
   SHARED wiMeta := PROJECT(wiMeta0, makeMeta(LEFT));
-  // Count of work-items
-  SHARED wiCount := COUNT(wiMeta);
 
   // Data structure to hold the sample indexes (i.e Bootstrap Sample) for each treeId
   SHARED sampleIndx := RECORD
@@ -90,53 +90,9 @@ EXPORT RF_Base(DATASET(GenField) X_in,
 
   // Function to randomly select features to use for each level of the tree building.
   // Each node is assigned a random subset of the features.
-  SHARED DATASET(TreeNodeDat) SelectVarsForNodesX(DATASET(TreeNodeDat) nodes) := FUNCTION
-    // At this point, nodes should have one instance per node per tree per wi, distributed by (wi, treeId)
-    // We are trying to choose featuresPerNode features out of the full set of features for each tree
-    // Start by extending the tree data.  Add a random number field and create <features> records for each tree.
-    xTreeNodeDat := RECORD(TreeNodeDat)
-      UNSIGNED numFeatures;
-      UNSIGNED featuresPerNode;
-      UNSIGNED rnd;
-    END;
-    // Note that each work-item may have a different value for numFeatures and featuresPerNode
-    xTreeNodeDat makeXNodes(treeNodeDat l, wiInfo r) := TRANSFORM
-      SELF.numFeatures := r.numFeatures;
-      SELF.featuresPerNode := r.featuresPerNode;
-      SELF := l;
-      SELF := [];
-    END;
-    xNodes := JOIN(nodes, wiMeta, LEFT.wi = RIGHT.wi, makeXNodes(LEFT, RIGHT), LOOKUP, FEW);
-    xTreeNodeDat getFeatures(xTreeNodeDat l, UNSIGNED c) := TRANSFORM
-      // Choose twice as many as we need, so that when we remove duplicates, we will (almost always)
-      // have at least the right number.  This is more efficient than enumerating all and picking <featuresPerNode>
-      // from that set because numFeatures >> featuresPerNode.  We will occasionally get a tree that
-      // has less than <featuresPerNode> variables, but that should only add to the diversity.
-      nf := IF(c <= l.featuresPerNode*2, l.numFeatures, SKIP);
-      SELF.number := (RANDOM()%nf) + 1;
-      SELF.rnd := RANDOM();
-      SELF := l;
-    END;
-    // Create twice as many features as we need, so that when we remove duplicates, we almost always
-    // have at least as many as we need.
-    nodeVars0 := NORMALIZE(xNodes, maxfeaturesPerNode*2, getFeatures(LEFT, COUNTER));
-    nodeVars1 := SORT(nodeVars0, wi, treeId, nodeId, number, LOCAL);
-    nodeVars2 := DEDUP(nodeVars1, wi, treeId, nodeId, number, LOCAL);
-    // Now we have up to <featuresPerNode> * 2 unique features per node.  We need to whittle it down to
-    // no more than <featuresPerNode>.
-    nodeVars3 := SORT(nodeVars2, wi, treeId, nodeId, rnd, LOCAL); // Mix up the features
-    nodeVars4 :=  GROUP(nodeVars3, wi, treeId, nodeId, LOCAL);
-    // Filter out the excess vars and transform back to TreeNodeDat.  Set id (not yet used) just as an excuse
-    // to check the count and skip if needed.
-    nodeVars := UNGROUP(PROJECT(nodeVars4, TRANSFORM(TreeNodeDat,
-                    SELF.id := IF(COUNTER <= LEFT.featuresPerNode, 0, SKIP),
-                    SELF := LEFT)));
-    // At this point, we have <featuresPerNode> records for almost every node.  Occasionally one will have less
-    // (but at least 1).
-    RETURN nodeVars;
-  END;
   SHARED DATASET(TreeNodeDat) SelectVarsForNodes(DATASET(TreeNodeDat) nodeDat) := FUNCTION
     // At this point, nodeDat should have one instance per id per node per tree per wi, distributed by (wi, treeId)
+    // Nodes should be sorted by (at least) wi, treeId, nodeId at this point.
     // We are trying to choose featuresPerNode features out of the full set of features for each tree node
     // First, extract the set of treeNodes
     nodes := DEDUP(nodeDat, wi, treeId, nodeId, LOCAL);  // Now we have one record per node
@@ -159,20 +115,21 @@ EXPORT RF_Base(DATASET(GenField) X_in,
       // have at least the right number.  This is more efficient than enumerating all and picking <featuresPerNode>
       // from that set because numFeatures >> featuresPerNode.  We will occasionally get a tree that
       // has less than <featuresPerNode> variables, but that should only add to the diversity.
-      nf := IF(c <= l.featuresPerNode*2, l.numFeatures, SKIP);
+      nf := l.numFeatures;
       SELF.number := (RANDOM()%nf) + 1;
       SELF.rnd := RANDOM();
       SELF := l;
     END;
     // Create twice as many features as we need, so that when we remove duplicates, we almost always
     // have at least as many as we need.
-    nodeVars0 := NORMALIZE(xNodes, maxfeaturesPerNode*2, getFeatures(LEFT, COUNTER));
-    nodeVars1 := SORT(nodeVars0, wi, treeId, nodeId, number, LOCAL);
-    nodeVars2 := DEDUP(nodeVars1, wi, treeId, nodeId, number, LOCAL);
+    nodeVars0 := NORMALIZE(xNodes, LEFT.featuresPerNode * 2, getFeatures(LEFT, COUNTER));
+    nodeVars1 :=  GROUP(nodeVars0, wi, treeId, nodeId, LOCAL);
+    nodeVars2 := SORT(nodeVars1, wi, treeId, nodeId, number); // Note: implicitly local because of GROUP
+    // Get rid of any duplicate features (we sampled with replacement so may be dupes)
+    nodeVars3 := DEDUP(nodeVars2, wi, treeId, nodeId, number);
     // Now we have up to <featuresPerNode> * 2 unique features per node.  We need to whittle it down to
     // no more than <featuresPerNode>.
-    nodeVars3 := SORT(nodeVars2, wi, treeId, nodeId, rnd, LOCAL); // Mix up the features
-    nodeVars4 :=  GROUP(nodeVars3, wi, treeId, nodeId, LOCAL);
+    nodeVars4 := SORT(nodeVars3, wi, treeId, nodeId, rnd); // Mix up the features
     // Filter out the excess vars and transform back to TreeNodeDat.  Set id (not yet used) just as an excuse
     // to check the count and skip if needed.
     nodeVars := UNGROUP(PROJECT(nodeVars4, TRANSFORM(TreeNodeDat,
@@ -272,33 +229,48 @@ EXPORT RF_Base(DATASET(GenField) X_in,
     RETURN forestNodes;
   END;
 
-  // Convert a model to a set of tree nodes
+  /**
+    * Extract the set of tree nodes from a model
+    *
+    */
   EXPORT DATASET(TreeNodeDat) Model2Nodes(DATASET(Layout_Model2) mod) := FUNCTION
     // Extract nodes from model as NumericField dataset
-    nfMod := ndArray.ToNumericField(mod, [rfModInd1.nodes]);
-    // Distribute by 'id' for distributed processing
-    nfModD := DISTRIBUTE(nfMod, id);
-    nfModG := GROUP(nfModD, wi, id, LOCAL);
+    nfNodes := ndArray.ToNumericField(mod, [rfModInd1.nodes]);
+    // Distribute by wi and id for distributed processing
+    nfNodesD := DISTRIBUTE(nfNodes, HASH32(wi, id));
+    nfNodesG := GROUP(nfNodesD, wi, id, LOCAL);
+    nfNodesS := SORT(nfNodesG, wi, id, number);
     TreeNodeDat makeNodes(NumericField rec, DATASET(NumericField) recs) := TRANSFORM
       SELF.wi := rec.wi;
-      recsS := SORT(recs, number, LOCAL);
-      SELF.treeId := recsS[rfModNodes3.treeId].value;
-      SELF.level := recsS[rfModNodes3.level].value;
-      SELF.nodeId := recsS[rfModNodes3.nodeId].value;
-      SELF.parentId := recsS[rfModNodes3.parentId].value;
-      SELF.isLeft := recsS[rfModNodes3.isLeft].value = 1;
-      SELF.number := recsS[rfModNodes3.number].value;
-      SELF.value := recsS[rfModNodes3.value].value;
-      SELF.isOrdinal := recsS[rfModNodes3.isOrdinal].value = 1;
-      SELF.depend := recsS[rfModNodes3.depend].value;
-      SELF.support := recsS[rfModNodes3.support].value;
+      SELF.treeId := recs[rfModNodes3.treeId].value;
+      SELF.level := recs[rfModNodes3.level].value;
+      SELF.nodeId := recs[rfModNodes3.nodeId].value;
+      SELF.parentId := recs[rfModNodes3.parentId].value;
+      SELF.isLeft := recs[rfModNodes3.isLeft].value = 1;
+      SELF.number := recs[rfModNodes3.number].value;
+      SELF.value := recs[rfModNodes3.value].value;
+      SELF.isOrdinal := recs[rfModNodes3.isOrdinal].value = 1;
+      SELF.depend := recs[rfModNodes3.depend].value;
+      SELF.support := recs[rfModNodes3.support].value;
       SELF := [];
     END;
     // Rollup individual fields into TreeNodeDat records.
-    nodes0 := ROLLUP(nfModG, GROUP, makeNodes(LEFT, ROWS(LEFT)));
+    nodes := ROLLUP(nfNodesS, GROUP, makeNodes(LEFT, ROWS(LEFT)));
     // Distribute by wi and TreeId
-    nodes := DISTRIBUTE(nodes0, HASH32(wi, treeId));
+    //nodes := DISTRIBUTE(nodes0, HASH32(wi, treeId));
     RETURN nodes;
+  END;
+  /**
+    * Extract the set of sample indexes (i.e. bootstrap samples for each tree)
+    * from a model
+    *
+    */
+  EXPORT Model2Samples(DATASET(Layout_Model2) mod) := FUNCTION
+    nfSamples := ndArray.ToNumericField(mod, [rfModInd1.samples]);
+    samples := PROJECT(nfSamples, TRANSFORM(sampleIndx, SELF.treeId := LEFT.id,
+                                            SELF.id := LEFT.number,
+                                            SELF.origId := LEFT.value));
+    return samples;
   END;
   /**
     * Convert the set of nodes describing the forest to a Model Format
@@ -325,26 +297,33 @@ EXPORT RF_Base(DATASET(GenField) X_in,
     mod := ndArray.FromNumericField(nfMod, [rfModInd1.nodes]);
     RETURN mod;
   END;
-
+  /**
+    * Convert the set of tree sample indexes to a Model Format
+    *
+    */
+  SHARED Indexes2Model := FUNCTION
+    nfIndexes := PROJECT(treeSampleIndx, TRANSFORM(NumericField,
+                                                    SELF.wi := 0, // Not used
+                                                    SELF.id := LEFT.treeId,
+                                                    SELF.number := LEFT.id,
+                                                    SELF.value := LEFT.origId));
+    indexes := ndArray.FromNumericField(nfIndexes, [rfModInd1.samples]);
+    return indexes;
+  END;
   /**
     * Get forest model
     *
     * RF uses the Layout_Model2 format, which is implemented as an N-Dimensional
     * numeric array (i.e. ndArray.NumericArray).
     *
-    * The NumericArray record allows any number of indexes.  In the case of RF,
-    * - the first index indicates the component of the model.  Two components are
-    *   currently defined (see Types for the enumeration rfModInd1):
-    *   - Nodes -- The set of tree-nodes representing the forest
-    *   - Samples -- The sample indexes representing the bootstrap for each treeId
-    * - the second index indicates the record-id for nodes or samples
-    * - the third index indicates the field-id within the record
-    *   - for Nodes, Types.rfModNodes3 enumerates the field-ids
-    *   - for Samples, Types.rfModSamples3 enumerates the field-ids
+    * See LT_Types for the format of the model
+    *
     */
   EXPORT DATASET(Layout_Model2) GetModel := FUNCTION
     nodes := GetNodes;
-    mod := Nodes2Model(nodes);
+    mod1 := Nodes2Model(nodes);
+    mod2 := Indexes2Model;
+    mod := mod1 + mod2;
     RETURN mod;
   END;
 

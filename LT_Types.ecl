@@ -1,6 +1,7 @@
+IMPORT $ AS LT;
 IMPORT ML_core;
 IMPORT ML_core.Types as CTypes;
-IMPORT ndArray;
+IMPORT LT.ndArray;
 t_Work_Item := CTypes.t_Work_Item;
 t_Count := CTypes.t_Count;
 t_RecordId := CTypes.t_RecordID;
@@ -32,8 +33,21 @@ EXPORT LT_Types := MODULE
     * Definition of the meaning of the indexes of the Model's
     * NumericArray.  rfModInd1 enumerates the first index, which
     * is used to determine which type of data is stored.
+    * - nodes stores the list of tree nodes that describes the forest.
+    *         The second index is just the sequential number of the node
+    *         The third index is enumerated below (rfModNodes3).
+    * - samples stores the set of sample indexes (i.e. ids) associated
+    *         with each treeId.
+    *         The second index represents the treeId.  The third index
+    *         represents the sample number. The value is the id of the
+    *         sample in the original training dataset.
+    *         [<samples, <treeId>, <sampleNum>] -> origId
+    * - classWeights (ClassificationForest only) stores the weights associated
+    *         with each class label.  The second index represents the class
+    *         label.  The value is the weight.  [<classWeights>, <classLabel>] -> weight
+    *
     */
-  EXPORT rfModInd1 := ENUM(UNSIGNED4, nodes = 1, samples = 2);
+  EXPORT rfModInd1 := ENUM(UNSIGNED4, nodes = 1, samples = 2, classWeights = 3);
   /**
     * rfModNodes3 provides the enumeration of the meaning of the third index
     * when the first index indicates nodes.
@@ -90,7 +104,7 @@ EXPORT LT_Types := MODULE
     * At the end of the forest growing process only the tree skeleton remains -- all the datapoints having
     * been summarized by the resulting branch and leaf nodes.
     */
-  EXPORT TreeNodeDat := RECORD // Tree Node data.
+  EXPORT TreeNodeDat := RECORD
     t_TreeID treeId;
     t_NodeID nodeId;
     t_NodeID parentId;
@@ -100,6 +114,20 @@ EXPORT LT_Types := MODULE
     t_Discrete    origId;        // The sample index (id) of the original X data that this sample came from
     t_FieldReal   depend;        // Instance Dependent value
     t_RecordId   support:=0;    // Number of data samples subsumed by this node
+  END;
+
+  /**
+    * ClassProbs represent the probability that a given sample is of a given class
+    *
+    */
+  EXPORT ClassProbs := RECORD
+    t_Work_Item wi;  // Work-item id
+    t_RecordID id;  // Sample identifier
+    t_Discrete class; // The class label
+    t_Discrete cnt; // The number of trees that assigned this class label
+    t_FieldReal prob; // The percentage of trees that assigned this class label
+                      // which is a rough stand-in for the probability that the
+                      // label is correct.
   END;
 
   /**

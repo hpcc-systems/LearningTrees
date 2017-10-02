@@ -15,6 +15,7 @@ IMPORT ML_Core.Types;
 numTrees := 100;
 maxDepth := 255;
 numFeatures := 7;
+balanceClasses := FALSE;
 
 t_Discrete := Types.t_Discrete;
 t_FieldReal := Types.t_FieldReal;
@@ -44,21 +45,27 @@ nodes := F.Model2Nodes(mod);
 OUTPUT(nodes, {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, id}, NAMED('TreeNodes'));
 modStats := F.GetModelStats(mod);
 OUTPUT(modStats, NAMED('ModelStatistics'));
+classWeights := F.Model2ClassWeights(mod);
+OUTPUT(classWeights, NAMED('ClassWeights'));
+
 Y_S := SORT(Y, value);
 classCounts0 := TABLE(Y, {wi, class := value, cnt := COUNT(GROUP)}, wi, value);
 classCounts := TABLE(classCounts0, {wi, classes := COUNT(GROUP)}, wi);
 
 Xtest := testNF(number != 52);
 Ycmp := PROJECT(testNF(number = 52), DiscreteField);
-Yhat := F.Classify(Xtest, mod);
+classProbs := F.GetClassProbs(Xtest, mod, balanceClasses);
+OUTPUT(classProbs, NAMED('ClassProbabilities'));
+// OUTPUT(COUNT(classProbs), NAMED('CP_Size'));
+Yhat := F.Classify(Xtest, mod, balanceClasses);
 
 cmp := JOIN(Yhat, Ycmp, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id, TRANSFORM({DiscreteField, t_Discrete cmpValue, UNSIGNED errors},
                   SELF.cmpValue := RIGHT.value, SELF.errors := IF(LEFT.value != RIGHT.value, 1, 0), SELF := LEFT));
 
 OUTPUT(cmp, NAMED('Details'));
 
-errStats := F.GetErrorStats(Xtest, Ycmp, mod);
+errStats := F.GetErrorStats(Xtest, Ycmp, mod, balanceClasses);
 OUTPUT(errStats, NAMED('Accuracy'));
 
-confusion := F.ConfusionMatrix(Xtest, Ycmp, mod);
+confusion := F.ConfusionMatrix(Xtest, Ycmp, mod, balanceClasses);
 OUTPUT(confusion, NAMED('ConfusionMatrix'));

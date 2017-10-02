@@ -1,7 +1,7 @@
+IMPORT $ AS LT;
+IMPORT LT.LT_Types AS Types;
 IMPORT ML_Core;
 IMPORT ML_Core.Types as CTypes;
-IMPORT LT_Types AS Types;
-IMPORT $ AS LT;
 IMPORT LT.internal AS int;
 
 
@@ -12,6 +12,8 @@ TreeNodeDat := Types.TreeNodeDat;
 t_Discrete := CTypes.t_Discrete;
 t_Work_Item := CTypes.t_Work_Item;
 t_RecordID := CTypes.t_RecordId;
+ClassProbs := Types.ClassProbs;
+
 /**
   * Classification Forest
   *
@@ -29,7 +31,7 @@ t_RecordID := CTypes.t_RecordId;
   * Random Forests inherently support multi-class problems.  Any number of
   * class labels can be used.
   *
-  * This implementation allows both Ordinal (discrete or continuous) and
+  * This implementation supports both Numeric (discrete or continuous) and
   * Nominal (unordered categorical values) for the independent (X) features.
   * There is therefore, no need to one-hot encode categorical features.
   * Nominal features should be identified by including their feature 'number'
@@ -59,7 +61,7 @@ t_RecordID := CTypes.t_RecordId;
       * @param nominalFields An optional set of field 'numbers' that represent Nominal (i.e. unordered,
       *                      categorical) values.  Specifying the nominal fields improves run-time
       *                      performance on these fields and my improve accuracy as well.  Binary fields
-      *                      (fields with only two values) need not be included here as they can be
+      *                      (fields with only two values) need not be listed here as they can be
       *                      considered either ordinal or nominal.
       * @return Model in Layout_Model2 format describing the fitted forest.
       */
@@ -74,15 +76,37 @@ t_RecordID := CTypes.t_RecordId;
       * Classify a set of data points using a previously fitted model
       *
       * @param X The set of independent data to classify in NumericField format
-      * @param mod A model previously returned by GetModel in Layout_Model2 format.
-      * @return A DiscreteField dataset that indicates the class of each item in X.
+      * @param mod A model previously returned by GetModel in Layout_Model2 format
+      * @return A DiscreteField dataset that indicates the class of each item in X
       */
-    EXPORT DATASET(DiscreteField) Classify(DATASET(NumericField) X, DATASET(Layout_Model2) mod) := FUNCTION
+    EXPORT DATASET(DiscreteField) Classify(DATASET(NumericField) X, DATASET(Layout_Model2) mod,
+                                              BOOLEAN balanceClasses=FALSE) := FUNCTION
       genX := NF2GenField(X);
       myRF := int.RF_Classification();
-      classes := myRF.Classify(genX, mod);
+      classes := myRF.Classify(genX, mod, balanceClasses);
       RETURN classes;
     END;
+
+    /**
+      * Get class probabilities
+      *
+      * Calculate the 'probability' that each datapoint is in each class.
+      * Probability is used loosely here, as the proportion of trees that
+      * voted for each class for each datapoint.
+      * @param X The set of independent data to classify in NumericField format
+      * @param mod A model previously returned by GetModel in Layout_Model2 format
+      * @return DATASET(ClassProbs), one record per datapoint (i.e. id) per class
+      *         label.  Class labels with zero votes are omitted.
+      */
+    EXPORT DATASET(ClassProbs) GetClassProbs(DATASET(NumericField) X, DATASET(Layout_Model2) mod,
+                                              BOOLEAN balanceClasses=FALSE) := FUNCTION
+      genX := NF2GenField(X);
+      myRF := int.RF_Classification();
+      probs := myRF.GetClassProbs(genX, mod, balanceClasses);
+      probsS := SORT(probs, wi, id, class); // Global sort
+      RETURN probsS;
+    END;
+
     /**
       * Extract the set of tree nodes from a model
       *
@@ -94,6 +118,17 @@ t_RecordID := CTypes.t_RecordId;
       nodes0 := myRF.Model2Nodes(mod);
       nodes := SORT(nodes0, wi, treeId, level, nodeId, LOCAL);
       RETURN nodes;
+    END;
+    /**
+      * Extract the set of class weights from the model
+      *
+      * @param mod A model as returned from GetModel
+      * @return DATASET(classWeightRec) representing weight for each class label
+      */
+    EXPORT  Model2ClassWeights(DATASET(Layout_Model2) mod) := FUNCTION
+      myRF := int.RF_Classification();
+      cw := myRF.Model2ClassWeights(mod);
+      RETURN cw;
     END;
     /**
       * Get statistics about the accuracy of the classification
@@ -126,9 +161,10 @@ t_RecordID := CTypes.t_RecordId;
       * @param Y The corresponding class labels in DATASET(DiscreteField) format
       * @return Dataset containing one record per work-item containing the metrics described above
       */
-    EXPORT GetErrorStats(DATASET(NumericField) X, DATASET(DiscreteField) Y, DATASET(Layout_Model2) mod) := FUNCTION
+    EXPORT GetErrorStats(DATASET(NumericField) X, DATASET(DiscreteField) Y, DATASET(Layout_Model2) mod,
+                                        BOOLEAN balanceClasses=FALSE) := FUNCTION
       myRF := int.RF_Classification();
-      predClasses := SORT(DISTRIBUTE(Classify(X, mod), HASH32(wi, id)), wi, id, LOCAL);
+      predClasses := SORT(DISTRIBUTE(Classify(X, mod, balanceClasses), HASH32(wi, id)), wi, id, LOCAL);
       actualClasses := SORT(DISTRIBUTE(Y, HASH32(wi, id)), wi, id, LOCAL);
       cmp := JOIN(predClasses, actualClasses, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id,
                     TRANSFORM({t_Work_Item wi, t_RecordID id, t_Discrete pred, t_Discrete actual, UNSIGNED errs},
@@ -174,9 +210,10 @@ t_RecordID := CTypes.t_RecordId;
       * @returns The confusion matrix as described above
       *
       */
-    EXPORT ConfusionMatrix(DATASET(NumericField) X, DATASET(DiscreteField) Y, DATASET(Layout_Model2) mod) := FUNCTION
+    EXPORT ConfusionMatrix(DATASET(NumericField) X, DATASET(DiscreteField) Y, DATASET(Layout_Model2) mod,
+                                    BOOLEAN balanceClasses=FALSE) := FUNCTION
       myRF := int.RF_Classification();
-      predClasses := SORT(DISTRIBUTE(Classify(X, mod), HASH32(wi, id)), wi, id, LOCAL);
+      predClasses := SORT(DISTRIBUTE(Classify(X, mod, balanceClasses), HASH32(wi, id)), wi, id, LOCAL);
       actualClasses := SORT(DISTRIBUTE(Y, HASH32(wi, id)), wi, id, LOCAL);
       // Create a record for each combination of predicted and actual as a DiscreteField matrix
       predxactual := JOIN(predClasses, actualClasses, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id,
