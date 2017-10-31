@@ -1,10 +1,14 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 IMPORT $.^ AS LT;
+IMPORT LT.Internal AS int;
 IMPORT LT.LT_Types as Types;
 IMPORT ML_Core as ML;
 IMPORT ML.Types AS CTypes;
 IMPORT std.system.Thorlib;
 IMPORT LT.ndArray;
-
+//IMPORT Types.Forest_Model AS FM;
 GenField := Types.GenField;
 ModelStats := Types.ModelStats;
 t_Work_Item := CTypes.t_Work_Item;
@@ -18,34 +22,44 @@ TreeNodeDat := Types.TreeNodeDat;
 NumericField := CTypes.NumericField;
 DiscreteField := CTypes.DiscreteField;
 Layout_Model2 := Types.Layout_Model2;
-rfModInd1 := Types.rfModInd1;
-rfModNodes3 := Types.rfModNodes3;
+//rfModInd1 := Types.rfModInd1;
+//rfModNodes3 := Types.rfModNodes3;
+FeatureImportanceRec := Types.FeatureImportanceRec;
+
 
 /**
   * Base Module for Random Forest algorithms.  Modules for RF Classification or Regression
   * are based on this one.
   * It provides the attributes to set up the forest as well as s
   */
-EXPORT RF_Base(DATASET(GenField) X_in,
-              DATASET(GenField) Y_In,
+EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
+              DATASET(GenField) Y_In=DATASET([], GenField),
               UNSIGNED numTrees=100,
               UNSIGNED featuresPerNodeIn=0,
-              UNSIGNED maxDepth=255) := MODULE, VIRTUAL
+              UNSIGNED maxDepth=255) := MODULE
   SHARED autoBin := TRUE;
   SHARED autobinSize := 10;
-  SHARED autobinSizeScald := autobinSize * 4294967295;
-
+  SHARED allowNoProgress := TRUE;  // If FALSE, tree will terminate when no progess can be made on any
+                                   // feature.  For RF, should be TRUE since it may get a better choice
+                                   // of features at the next level.
+  SHARED maxU4 := 4294967295; // Maximum value for an Unsigned 4
+  SHARED maxR8 := 1.797693e+308; // Maximum value for a REAL8
+  SHARED autobinSizeScald := autobinSize * maxU4;
   SHARED X0 := DISTRIBUTE(X_in, HASH32(wi, id));
   SHARED Y := DISTRIBUTE(Y_in, HASH32(wi, id));
   SHARED X := SORT(X0, wi, id, number, LOCAL);
-  SHARED Rand01 := RANDOM()/4294967295; // Random number between zero and one.
+  SHARED Rand01 := RANDOM()/maxU4; // Random number between zero and one.
 
   // P log P calculation for entropy.  Note that Shannon entropy uses log base 2 so the division by LOG(2) is
   // to convert the base from 10 to 2.
   SHARED P_Log_P(REAL P) := IF(P=1, 0, -P* LN(P) / LN(2));
 
   SHARED empty_model := DATASET([], Layout_Model2);
-
+  SHARED empty_data := DATASET([], GenField);
+  // Abbreviations for Model Index definitions
+  SHARED FM := Types.Forest_Model;
+  SHARED FM1 := FM.Ind1;
+  SHARED FMN3 := FM.Ind3_nodes;
   // Calculate work-item metadata
   Y_S := SORT(Y, wi);  // Sort Y by work-item
   // Each work-item needs its own metadata (i.e. numSamples, numFeatures, .  Construct that here.
@@ -229,29 +243,79 @@ EXPORT RF_Base(DATASET(GenField) X_in,
     RETURN forestNodes;
   END;
 
+  // Find the corresponding leaf node for each X sample given an expanded forest model (set of tree nodes)
+  EXPORT DATASET(TreeNodeDat) GetLeafsForData(DATASET(TreeNodeDat) tNodes, DATASET(GenField) X) := FUNCTION
+    // Distribute X by wi and id.
+    xD := DISTRIBUTE(X, HASH32(wi, id));
+    // Extend each root for each ID in X
+    // Leave the extended roots distributed by wi, id.
+    roots := tNodes(level = 1);
+    rootsExt := JOIN(xD(number=1), roots, LEFT.wi = RIGHT.wi, TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT),
+                     MANY, LOOKUP);
+    rootBranches := rootsExt(number != 0); // Roots are almost always branch (split) nodes.
+    rootLeafs := rootsExt(number = 0); // Unusual but not impossible
+    loopBody(DATASET(TreeNodeDat) levelBranches, UNSIGNED tLevel) := FUNCTION
+      // At this point, we have one record per node, per id.
+      // We extend each id down the tree one level at a time, picking the correct next nodes
+      // for that id at each branch.
+      // Next nodes are returned -- both leafs and branches.  The leafs are filtered out by the LOOP,
+      // while the branches are send on to the next round.
+      // Ultimately, a leaf is returned for each id, which defines our final result.
+      // Select the next nodes by combining the selected data field with each node
+      // Note that:  1) we retain the id from the previous round, but the field number(number) is derived from the branch
+      //             2) 'value' in the node is the value to split upon, while value in the data (X) is the value of that datapoint
+      //             3) NodeIds at level n + 1 are deterministic.  The child nodes at the next level's nodeId is 2 * nodeId -1 for the
+      //                left node, and 2 * nodeId for the right node.
+      branchVals := JOIN(levelBranches, xD, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id AND LEFT.number = RIGHT.number,
+                          TRANSFORM({TreeNodeDat, BOOLEAN branchLeft},
+                                      SELF.branchLeft :=  ((LEFT.isOrdinal AND RIGHT.value <= LEFT.value) OR
+                                                          ((NOT LEFT.isOrdinal) AND RIGHT.value = LEFT.value)),
+                                      SELF.parentId := LEFT.nodeId, SELF := LEFT),
+                          LOCAL);
+      // Now, nextNode indicates the selected (left or right) nodeId at the next level for each branch
+      // Now we use nextNode to select the node for the next round, for each instance
+      nextLevelNodes := tNodes(level = tLevel + 1);
+      nextLevelSelNodes := JOIN(branchVals, nextLevelNodes, LEFT.wi = RIGHT.wi AND
+                              LEFT.treeId = RIGHT.treeId AND LEFT.nodeId = RIGHT.parentId AND
+                              LEFT.branchLeft = RIGHT.isLeft,
+                              TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT), LOOKUP);
+      // Return the selected nodes at the next level.  These nodes may be leafs or branches.
+      // Any leafs will be filtered out by the loop.  Any branches will go on to the next round.
+      // When there are no more branches to process, we are done.  The selected leafs for each datapoint
+      // is returned. All nodes are left distributed by wi, id.
+      RETURN nextLevelSelNodes;
+    END;
+    // The loop will return the deepest leaf node associated with each sample.
+    selectedLeafs0 := LOOP(rootBranches, LEFT.number>0, EXISTS(ROWS(LEFT)),
+                          loopBody(ROWS(LEFT), COUNTER));
+    selectedLeafs := selectedLeafs0 + rootLeafs;
+
+    RETURN selectedLeafs;
+  END; // GetLeafsForData
   /**
     * Extract the set of tree nodes from a model
     *
     */
   EXPORT DATASET(TreeNodeDat) Model2Nodes(DATASET(Layout_Model2) mod) := FUNCTION
     // Extract nodes from model as NumericField dataset
-    nfNodes := ndArray.ToNumericField(mod, [rfModInd1.nodes]);
+    nfNodes := ndArray.ToNumericField(mod, [FM1.nodes]);
     // Distribute by wi and id for distributed processing
     nfNodesD := DISTRIBUTE(nfNodes, HASH32(wi, id));
     nfNodesG := GROUP(nfNodesD, wi, id, LOCAL);
     nfNodesS := SORT(nfNodesG, wi, id, number);
     TreeNodeDat makeNodes(NumericField rec, DATASET(NumericField) recs) := TRANSFORM
       SELF.wi := rec.wi;
-      SELF.treeId := recs[rfModNodes3.treeId].value;
-      SELF.level := recs[rfModNodes3.level].value;
-      SELF.nodeId := recs[rfModNodes3.nodeId].value;
-      SELF.parentId := recs[rfModNodes3.parentId].value;
-      SELF.isLeft := recs[rfModNodes3.isLeft].value = 1;
-      SELF.number := recs[rfModNodes3.number].value;
-      SELF.value := recs[rfModNodes3.value].value;
-      SELF.isOrdinal := recs[rfModNodes3.isOrdinal].value = 1;
-      SELF.depend := recs[rfModNodes3.depend].value;
-      SELF.support := recs[rfModNodes3.support].value;
+      SELF.treeId := recs[FMN3.treeId].value;
+      SELF.level := recs[FMN3.level].value;
+      SELF.nodeId := recs[FMN3.nodeId].value;
+      SELF.parentId := recs[FMN3.parentId].value;
+      SELF.isLeft := recs[FMN3.isLeft].value = 1;
+      SELF.number := recs[FMN3.number].value;
+      SELF.value := recs[FMN3.value].value;
+      SELF.isOrdinal := recs[FMN3.isOrd].value = 1;
+      SELF.depend := recs[FMN3.depend].value;
+      SELF.support := recs[FMN3.support].value;
+      SELF.ir := recs[FMN3.ir].value;
       SELF := [];
     END;
     // Rollup individual fields into TreeNodeDat records.
@@ -266,7 +330,7 @@ EXPORT RF_Base(DATASET(GenField) X_in,
     *
     */
   EXPORT Model2Samples(DATASET(Layout_Model2) mod) := FUNCTION
-    nfSamples := ndArray.ToNumericField(mod, [rfModInd1.samples]);
+    nfSamples := ndArray.ToNumericField(mod, [FM1.samples]);
     samples := PROJECT(nfSamples, TRANSFORM(sampleIndx, SELF.treeId := LEFT.id,
                                             SELF.id := LEFT.number,
                                             SELF.origId := LEFT.value));
@@ -279,22 +343,22 @@ EXPORT RF_Base(DATASET(GenField) X_in,
   EXPORT DATASET(Layout_Model2) Nodes2Model(DATASET(TreeNodeDat) nodes) := FUNCTION
     NumericField makeMod({TreeNodeDat, UNSIGNED recordId} d, UNSIGNED c) := TRANSFORM
       SELF.wi := d.wi;
-      indx1 := CHOOSE(c, rfModNodes3.treeId, rfModNodes3.level, rfModNodes3.nodeId,
-                         rfModNodes3.parentId, rfModNodes3.isLeft, rfModNodes3.number,
-                         rfModNodes3.value, rfModNodes3.isOrdinal,
-                         rfModNodes3.depend, rfModNodes3.support);
+      indx1 := CHOOSE(c, FMN3.treeId, FMN3.level, FMN3.nodeId,
+                         FMN3.parentId, FMN3.isLeft, FMN3.number,
+                         FMN3.value, FMN3.isOrd,
+                         FMN3.depend, FMN3.support, FMN3.ir);
       SELF.value := CHOOSE(c, d.treeId, d.level, d.nodeId, d.parentId,
                             (UNSIGNED)d.isLeft, d.number, d.value, (UNSIGNED)d.isOrdinal,
-                            d.depend, d.support);
+                            d.depend, d.support, d.ir);
       SELF.number := indx1;
       SELF.id := d.recordId;
     END;
     // Add a record id to nodes
     nodesExt := PROJECT(nodes, TRANSFORM({TreeNodeDat, UNSIGNED recordId}, SELF.recordId := COUNTER, SELF := LEFT));
     // Make into a NumericField dataset
-    nfMod := NORMALIZE(nodesExt, 10, makeMod(LEFT, COUNTER));
+    nfMod := NORMALIZE(nodesExt, 11, makeMod(LEFT, COUNTER));
     // Insert at position [modInd.nodes] in the ndArray
-    mod := ndArray.FromNumericField(nfMod, [rfModInd1.nodes]);
+    mod := ndArray.FromNumericField(nfMod, [FM1.nodes]);
     RETURN mod;
   END;
   /**
@@ -307,7 +371,7 @@ EXPORT RF_Base(DATASET(GenField) X_in,
                                                     SELF.id := LEFT.treeId,
                                                     SELF.number := LEFT.id,
                                                     SELF.value := LEFT.origId));
-    indexes := ndArray.FromNumericField(nfIndexes, [rfModInd1.samples]);
+    indexes := ndArray.FromNumericField(nfIndexes, [FM1.samples]);
     return indexes;
   END;
   /**
@@ -330,16 +394,164 @@ EXPORT RF_Base(DATASET(GenField) X_in,
   // ModelStats
   EXPORT GetModelStats(DATASET(Layout_Model2) mod) := FUNCTION
     nodes := Model2Nodes(mod);
-    treeStats := TABLE(nodes, {wi, treeId, nodeCount := COUNT(GROUP), depth := MAX(GROUP, level),
-                        totSupport := SUM(GROUP, support)}, wi, treeId);
-    topStats := TABLE(treeStats, {wi, treeCount := COUNT(GROUP),
-                        minTreeDepth := MIN(GROUP, depth), maxTreeDepth := MAX(GROUP, depth),
+    treeStats := TABLE(nodes, {wi, treeId, nodeCount := COUNT(GROUP), depth := MAX(GROUP, level)},
+                        wi, treeId);
+    leafStats := TABLE(nodes(number=0), {wi, treeId, nodeCount := COUNT(GROUP), depth := AVE(GROUP, level),
+                        totSupt := SUM(GROUP, support),
+                        maxSupt := MAX(GROUP, support),
+                        minDepth := MIN(GROUP, level)}, wi, treeId);
+    treeSumm := TABLE(treeStats, {wi,
+                        treeCount := COUNT(GROUP),
+                        minTreeDepth := MIN(GROUP, depth),
+                        maxTreeDepth := MAX(GROUP, depth),
                         avgTreeDepth := AVE(GROUP, depth),
-                        minTreeNodes := MIN(GROUP, nodeCount), maxTreeNodes := MAX(GROUP, nodeCount),
+                        minTreeNodes := MIN(GROUP, nodeCount),
+                        maxTreeNodes := MAX(GROUP, nodeCount),
                         avgTreeNodes := AVE(GROUP, nodeCount),
-                        maxNodesPerTree := MAX(GROUP, nodeCount), totalNodes := SUM(GROUP, nodeCount),
-                        minSupport := MIN(GROUP, totSupport), maxSupport := MAX(GROUP, totSupport),
-                        avgSupport := AVE(GROUP, totSupport)}, wi);
-    RETURN PROJECT(topStats, ModelStats);
+                        totalNodes := SUM(GROUP, nodeCount)});
+    leafSumm := TABLE(leafStats, {wi, treeCount := COUNT(GROUP),
+                        avgLeafs := AVE(GROUP, nodeCount),
+                        minSupport := MIN(GROUP, totSupt),
+                        maxSupport := MAX(GROUP, totSupt),
+                        avgSupport := AVE(GROUP, totSupt),
+                        avgSupportPerLeaf := SUM(GROUP, totSupt) / SUM(GROUP, nodeCount),
+                        maxSupportPerLeaf := MAX(GROUP, maxSupt),
+                        avgLeafDepth := AVE(GROUP, depth),
+                        minLeafDepth := MIN(GROUP, minDepth)}, wi);
+    allStats := JOIN(treeSumm, leafSumm, LEFT.wi = RIGHT.wi, TRANSFORM(ModelStats,
+                                                SELF := LEFT,
+                                                SELF := RIGHT));
+    RETURN allStats;
   END;
+  /**
+    * Feature Importance
+    *
+    * Calculate feature importance using the Mean Decrease Impurity (MDI) method
+    * from "Understanding Random Forests: by Gilles Loupe (https://arxiv.org/pdf/1407.7502.pdf)
+    * and due to Breiman [2001, 2002]
+    *
+    * Each feature is ranked by:
+    *   SUM for each branch node in which feature appears (across all trees):
+    *     impurity_reduction * number of nodes split
+    *
+    */
+  EXPORT FeatureImportance(DATASET(Layout_Model2) mod) := FUNCTION
+    nodes := Model2Nodes(mod);
+    featureStats := TABLE(nodes(number > 0), {wi, number, importance := SUM(GROUP, ir * support)/numTrees, uses := COUNT(GROUP)}, wi, number);
+    fi := SORT(PROJECT(featureStats, TRANSFORM(FeatureImportanceRec, SELF := LEFT)), wi, -importance);
+    RETURN fi;
+  END;
+  // Extended tree node record
+  SHARED xTreeNodeDat := RECORD(TreeNodeDat)
+    SET OF UNSIGNED pathNodes;
+  END;
+  // Add to nodes a globally unique nodeId (i.e. 'id') as well as a set of ids for each
+  // node representing the full path from the root, root and current inclusive.
+  // Note that id only needs to be unique within a tree, so we use a LOCAL PROJECT.
+  SHARED GetExtendedNodes(DATASET(TreeNodeDat) nodes) := FUNCTION
+    nodesS := SORT(DISTRIBUTE(nodes, HASH32(wi, treeId)), wi, treeId, level, nodeId, LOCAL);
+    // Calculate the ancestor id's one layer at a time from the root down.
+    // Root just assigns its own id.  Others append their own id to the parent's id.
+    xNodes0 := PROJECT(nodesS, TRANSFORM(xTreeNodeDat,
+                                        SELF.id := COUNTER,
+                                        SELF.pathNodes := [SELF.id],
+                                        SELF := LEFT), LOCAL);
+    loopBody(DATASET(xTreeNodeDat) n, UNSIGNED lev) := FUNCTION
+      assignNodes := n(level = lev);
+      parentNodes := n(level = lev - 1);
+      newNodes := JOIN(assignNodes, parentNodes, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
+                                        LEFT.parentId = RIGHT.nodeId,
+                                   TRANSFORM(xTreeNodeDat,
+                                              SELF.pathNodes := RIGHT.pathNodes + LEFT.pathNodes,
+                                              SELF := LEFT), LEFT OUTER, LOCAL);
+      outNodes := n(level != lev) + newNodes;
+      RETURN outNodes;
+    END;
+    maxLevel := MAX(nodesS, level);
+    // Loop for each level
+    xNodes := LOOP(xNodes0, maxLevel, loopBody(ROWS(LEFT), COUNTER));
+    RETURN xNodes;
+  END;
+  SHARED dPath := RECORD
+    t_Work_Item wi;
+    t_RecordId id;
+    t_TreeId treeId;
+    SET OF UNSIGNED4 pathNodes;
+  END;
+  // Returns a record for each datapoint, for each tree, that includes the path for
+  // the datapoint from the root to the leaf that it falls into.
+  SHARED GetDecisionPaths(DATASET(TreeNodeDat) nodes, DATASET(GenField) X) := FUNCTION
+    leafs := GetLeafsForData(nodes, X);
+    xnodes := GetExtendedNodes(nodes);
+    dps := JOIN(leafs, xnodes, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND LEFT.level = RIGHT.level AND
+                                  LEFT.nodeId = RIGHT.nodeId,
+                TRANSFORM(dPath,
+                          SELF.wi := LEFT.wi,
+                          SELF.id := LEFT.id,
+                          SELF.treeId := LEFT.treeId,
+                          SELF.pathNodes := RIGHT.pathNodes), LEFT OUTER);
+    return dps;
+  END;
+  /**
+    * Decision Distance Matrix
+    *
+    * Calculate a Decision Distance (DD) Matrix with one cell for each pair of points in [X1, X2].
+    * If X2 is omitted, then the matrix will have one cell per pair of points in X1.
+    * If X1 has N ids and X2 has M ids, then N x M records will be produced.
+    * If only X1 is provided, then N x N records will be produced
+    * This metric provides a number between zero and one, with zero indicating that the points
+    * are very similar, and one representing maximal dissimilarity.
+    * This is a distance measure within the decision space of the given random forest model.
+    * 1 - DD conversely represents a similarity measure known as MeanSimilarityMeasure(MSM)
+    *
+    * DD(x1, x2) := 1 - MSM(x1, x2)
+    * MSM(x1, x2) := MEAN for all trees (SM(tree, x1, x2)
+    * SM(tree, x1, x2) := Maximum Level at which Path(tree, X1)
+    *                     and Path(tree, X2) are equal / (|Path(tree, X1)| + |Path(tree, X2)| / 2)
+    * Path(x) := The set of nodes from the root of the tree to the Leaf(x) inclusive.
+    * |Path(x)| := The length of the set Path(x)
+    *
+    */
+  EXPORT DecisionDistanceMatrix(DATASET(Layout_Model2) mod, DATASET(GenField) X1, DATASET(GenField) X2=empty_data) := FUNCTION
+    nodes := Model2Nodes(mod);
+    paths1 := SORT(GetDecisionPaths(nodes, X1), id);
+    paths2 := IF(EXISTS(X2), SORT(GetDecisionPaths(nodes, X2), id), paths1);
+    // Form an N x M upper triangular matrix for each tree, with values being the SM.
+    sm := JOIN(paths1, paths2, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId,
+                TRANSFORM({t_TreeId treeId, NumericField},
+                          SELF.id := LEFT.id,
+                          SELF.number := RIGHT.id,
+                          SELF.value := int.CommonPrefixLen(LEFT.pathNodes, RIGHT.pathNodes) / ((COUNT(LEFT.pathNodes) + COUNT(RIGHT.pathNodes))/2),
+                          SELF := LEFT));
+    // Now average across trees
+    // First redistribute by id, so that information for all trees for an id is on one node
+    smD := DISTRIBUTE(sm, HASH32(wi, id));
+    dd := TABLE(smD, {wi, id, number, REAL8 ddVal := 1 - AVE(GROUP, value)}, wi, id, number, LOCAL);
+    // Return as NumericField array.
+    ddm := PROJECT(dd, TRANSFORM(NumericField, SELF.value := LEFT.ddVal, SELF := LEFT), LOCAL);
+    RETURN ddm;
+  END; // DecisionDistanceMatrix
+  /**
+    * Uniqueness Factor
+    *
+    * Calculate how isolated each datapoint is in the decision space of the random forest
+    * 0 < UF < 1, low values indicate that the datapoint is similar to other datapoints.
+    * high values indicate uniqueness.
+    *
+    * Calculated as: SUM for all other points(Decision Distance) / (Number of Points - 1)
+    *
+    */
+    EXPORT UniquenessFactor(DATASET(Layout_Model2) mod, DATASET(GenField) X1, DATASET(GenField) X2=empty_data) := FUNCTION
+      // Get the Decision Distance Matrix
+      ddm := DecisionDistanceMatrix(mod, X1, X2);
+      ddmD := DISTRIBUTE(ddm, HASH32(wi, id));
+      // Sum the distance for each point to every other point
+      uf0 := TABLE(ddmD, {wi, id, totVal := AVE(GROUP, value)}, wi, id, LOCAL);
+      uf := PROJECT(uf0, TRANSFORM(NumericField,
+                                    SELF.number := 1,
+                                    SELF.value := LEFT.totVal,
+                                    SELF.wi := LEFT.wi,
+                                    SELF.id := LEFT.id));
+      RETURN uf;
+    END; // Uniqueness Factor
 END; // RF_Base

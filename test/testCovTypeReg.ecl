@@ -1,3 +1,6 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 /**
   * Use the Cover Type database of Rocky Mountain Forest plots.
   * Perform a regression to predict the elevation given the other features.
@@ -11,15 +14,14 @@ IMPORT LT.LT_Types;
 IMPORT ML_Core;
 IMPORT ML_Core.Types;
 
-numTrees := 100;
+numTrees := 20;
 maxDepth := 255;
-numFeatures := 7;
+numFeatures := 0; // Zero is automatic choice
 
 t_Discrete := Types.t_Discrete;
 t_FieldReal := Types.t_FieldReal;
 DiscreteField := Types.DiscreteField;
 NumericField := Types.NumericField;
-GenField := LT_Types.GenField;
 trainDat := CovTypeDS.trainRecs;
 testDat := CovTypeDS.testRecs;
 ctRec := CovTypeDS.covTypeRec;
@@ -34,24 +36,35 @@ X := PROJECT(trainNF(number != 1), TRANSFORM(NumericField,
         SELF.number := LEFT.number -1, SELF := LEFT));
 Y := PROJECT(trainNF(number = 1), TRANSFORM(NumericField,
         SELF.number := 1, SELF := LEFT));
+IMPORT Python;
+SET OF UNSIGNED incrementSet(SET OF UNSIGNED s, INTEGER increment) := EMBED(Python)
+  outSet = []
+  for i in range(len(s)):
+    outSet.append(s[i] + increment)
+  return outSet
+ENDEMBED;
+// Fixup IDs of nominal fields to match
+nomFields := incrementSet(nominalFields, -1);
 card0 := SORT(X, number, value);
 card1 := TABLE(card0, {number, value, valCnt := COUNT(GROUP)}, number, value);
 card2 := TABLE(card1, {number, featureVals := COUNT(GROUP)}, number);
 card := TABLE(card2, {cardinality := SUM(GROUP, featureVals)}, ALL);
 OUTPUT(card, NAMED('X_Cardinality'));
 F := LT.RegressionForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth);
-mod := F.GetModel(X, Y, nominalFields);
+mod := F.GetModel(X, Y, nomFields);
 OUTPUT(Y, NAMED('Ytrain'));
 Y_S := SORT(Y, value);
 classCounts0 := TABLE(Y, {wi, class := value, cnt := COUNT(GROUP)}, wi, value);
 classCounts := TABLE(classCounts0, {wi, classes := COUNT(GROUP)}, wi);
 
 OUTPUT(mod, NAMED('Model'));
+nodes := SORT(F.Model2Nodes(mod), wi, treeId, level, nodeId);
+OUTPUT(nodes, {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, ir}, NAMED('TreeNodes'));
 modStats := F.GetModelStats(mod);
 OUTPUT(modStats, NAMED('ModelStatistics'));
-Xtest := PROJECT(testNF(number != 1), TRANSFORM(GenField, SELF.isOrdinal := IF(LEFT.number IN nominalFields, FALSE, TRUE),
+Xtest := PROJECT(testNF(number != 1), TRANSFORM(NumericField,
                     SELF.number := LEFT.number - 1, SELF := LEFT));
-Ycmp := PROJECT(testNF(number = 1), TRANSFORM(GenField, SELF.isOrdinal := IF(LEFT.number IN nominalFields, FALSE, TRUE), SELF.number := 1, SELF := LEFT));
+Ycmp := PROJECT(testNF(number = 1), TRANSFORM(NumericField, SELF.number := 1, SELF := LEFT));
 
 Yhat := F.Predict(Xtest, mod);
 
@@ -67,3 +80,6 @@ MSE := TABLE(cmp, {wi, mse := AVE(GROUP, err2), rmse := SQRT(AVE(GROUP, err2)), 
 ErrStats := JOIN(MSE, rsq, LEFT.wi = RIGHT.wi, TRANSFORM({mse, REAL R2}, SELF.R2 := RIGHT.R2, SELF := LEFT));
 
 OUTPUT(ErrStats, NAMED('ErrorStats'));
+
+fi := F.FeatureImportance(mod);
+OUTPUT(fi, NAMED('FeatureImportance'));

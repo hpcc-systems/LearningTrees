@@ -1,16 +1,18 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 IMPORT $.^ AS LT;
 IMPORT ML_Core.Types AS CTypes;
 IMPORT LT.LT_Types AS Types;
 
 NumericField := CTypes.NumericField;
 DiscreteField := CTypes.DiscreteField;
-GenField := Types.GenField;
 errorProb := 0;
 wiCount := 1;
 numTrainingRecs := 1000;
-numTestRecs := 100;
-numTrees := 1;
-numVarsPerTree := 3;
+numTestRecs := 1000;
+numTrees := 20;
+numVarsPerTree := 0;
 
 // Return TRUE with probability p
 prob(REAL p) := FUNCTION
@@ -86,10 +88,10 @@ OUTPUT(Ye, NAMED('Y_train'));
 
 F := LT.ClassificationForest(numTrees, numVarsPerTree);
 
-//mod := F.GetModel(Xe, Ye, nominals);
+mod := F.GetModel(Xe, Ye, nominals);
 
 // With this line it runs fine.
-mod := F.GetModel(X, Y, nominals);
+//mod := F.GetModel(X, Y, nominals);
 
 OUTPUT(mod, NAMED('Model'));
 modStats := F.GetModelStats(mod);
@@ -112,16 +114,8 @@ Yhat0 := F.Classify(Xt, mod);
 Yhat := DISTRIBUTE(SORT(Yhat0, id, LOCAL),  id);
 OUTPUT(Yhat, NAMED('rawPredict'));
 
-dseRec := RECORD(dsRec)
-  UNSIGNED Yhat;
-  STRING4 Status;
-END;
+errStats := F.GetErrorStats(Xt, Ycmp, mod);
+OUTPUT(errStats, NAMED('Accuracy'));
 
-dsCmp := SORT(JOIN(dsTest, Yhat, LEFT.id = RIGHT.id, TRANSFORM(dseRec, SELF.Yhat := RIGHT.value,
-                    SELF.Y := LEFT.Y, SELF.Status := IF(SELF.Y = SELF.Yhat, '', 'FAIL'), SELF := LEFT), LOCAL), id);
-
-OUTPUT(dsCmp, NAMED('Details'));
-
-summary := TABLE(dsCmp(Status = 'FAIL'), {UNSIGNED errors := COUNT(GROUP), REAL errorRate := COUNT(GROUP) / numTestRecs});
-
-OUTPUT(summary, NAMED('Summary'));
+confusion := F.ConfusionMatrix(Xt, Ycmp, mod);
+OUTPUT(confusion, NAMED('ConfusionMatrix'));

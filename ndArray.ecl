@@ -1,12 +1,15 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 IMPORT ML_Core.Types;
 
 t_work_item := Types.t_work_item;
 t_fieldReal := Types.t_fieldReal;
-t_index := UNSIGNED4;
-t_indexes := SET OF t_index;
 NumericField := Types.NumericField;
 
 EXPORT ndArray := MODULE
+  EXPORT t_index := UNSIGNED4;  // Type of each index value
+  EXPORT t_indexes := SET OF t_index; // Definition of the indexes field
   /**
     * Record format for Numeric ndArray
     */

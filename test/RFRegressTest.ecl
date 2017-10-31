@@ -1,3 +1,6 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 IMPORT $.^ AS LT;
 IMPORT LT.LT_Types AS Types;
 IMPORT ML_Core;
@@ -5,18 +8,11 @@ IMPORT ML_Core.Types AS CTypes;
 
 NumericField := CTypes.NumericField;
 wiCount := 1;
-numTrainingRecs := 20000;
-numTestRecs := 10000;
-numTrees := 50;
-numVarsPerTree := 3;
-maxTreeDepth := 1000;
-
-// Return TRUE with probability p
-prob(REAL p) := FUNCTION
-  rnd := RANDOM() % 1000000 + 1;
-  isTrue := IF(rnd / 1000000 <= p, TRUE, FALSE);
-  RETURN isTrue;
-END;
+numTrainingRecs := 5000;
+numTestRecs := 5000;
+numTrees := 20;
+numVarsPerTree := 0;
+maxTreeDepth := 255;
 
 // Test Function:
 // Y := IF X1 < 0:  X2 + X3
@@ -37,7 +33,7 @@ dsRec make_data(dsRec d, UNSIGNED c) := TRANSFORM
   // Pick random X2 and X3
   SELF.X2 := ROUND(r2%1000000 / 10000 * 2 - 100);
   BOOLEAN x2B := SELF.X2=1;
-  SELF.X3 := ROUND(r3%1000000 / 10000 * 2 -100);
+  SELF.X3 := ROUND(r3%1000000 / 10000 * 2 - 100);
   SELF.Y := IF(SELF.X1 <= 0, SELF.X2 + SELF.X3, SELF.X3 - SELF.X2);
 END;
 ds := NORMALIZE(dummy, numTrainingRecs, make_data(LEFT, COUNTER));
@@ -82,12 +78,10 @@ Ycmp := PROJECT(dsTest, TRANSFORM(NumericField, SELF.wi := 1, SELF.id := LEFT.id
                             SELF.value := LEFT.Y));
 Yhat0 := F.Predict(Xt, mod);
 Yhat := DISTRIBUTE(SORT(PROJECT(Yhat0, TRANSFORM(NumericField, SELF := LEFT)), id, LOCAL),  id);
-OUTPUT(Yhat, NAMED('rawPredict'));
 
 dseRec := RECORD(dsRec)
   REAL Yhat;
   REAL err2;
-  STRING4 Status;
   UNSIGNED wi;
 END;
 
@@ -95,13 +89,15 @@ dseRec dseFromXY(dsRec l, NumericField r) := TRANSFORM
   SELF.wi := r.wi;
   SELF.Yhat := r.value;
   SELF.err2 := POWER(l.y - SELF.Yhat, 2);
-  SELF.Status := IF(l.y = SELF.Yhat, '', 'FAIL');
   SELF := l;
 END;
 dsCmp := SORT(JOIN(dsTest, Yhat, LEFT.id = RIGHT.id, dseFromXY(LEFT, RIGHT), LOCAL), id);
 
 OUTPUT(dsCmp, NAMED('Details'));
 
-MSE := TABLE(dsCmp, {wi, mse := AVE(GROUP, err2), rmse := POWER(AVE(GROUP, err2), .5)}, wi);
+Yvar := VARIANCE(Ycmp, value);
+rsq := F.Rsquared(Xt, Ycmp, mod);
+MSE := TABLE(dsCmp, {wi, mse := AVE(GROUP, err2), rmse := SQRT(AVE(GROUP, err2)), stdevY := SQRT(VARIANCE(GROUP, y))}, wi);
+ErrStats := JOIN(MSE, rsq, LEFT.wi = RIGHT.wi, TRANSFORM({mse, REAL R2}, SELF.R2 := RIGHT.R2, SELF := LEFT));
 
-OUTPUT(MSE, NAMED('MeanSquareError'));
+OUTPUT(ErrStats, NAMED('ErrorStats'));

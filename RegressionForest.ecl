@@ -1,8 +1,11 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 
 IMPORT ML_Core;
 IMPORT ML_Core.Types as CTypes;
-IMPORT LT_Types AS Types;
 IMPORT $ AS LT;
+IMPORT LT.LT_Types AS Types;
 IMPORT LT.internal AS int;
 
 

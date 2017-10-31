@@ -1,3 +1,6 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 /**
   * Use the Cover Type database of Rocky Mountain Forest plots.
   * Perform a Random Forest classification to determine the primary Cover Type
@@ -12,16 +15,15 @@ IMPORT LT.LT_Types;
 IMPORT ML_Core;
 IMPORT ML_Core.Types;
 
-numTrees := 100;
+numTrees := 20;
 maxDepth := 255;
-numFeatures := 7;
+numFeatures := 0; // Zero is automatic choice
 balanceClasses := FALSE;
 
 t_Discrete := Types.t_Discrete;
 t_FieldReal := Types.t_FieldReal;
 DiscreteField := Types.DiscreteField;
 NumericField := Types.NumericField;
-GenField := LT_Types.GenField;
 trainDat := CovTypeDS.trainRecs;
 testDat := CovTypeDS.testRecs;
 ctRec := CovTypeDS.covTypeRec;
@@ -41,8 +43,8 @@ OUTPUT(card, NAMED('X_Cardinality'));
 F := LT.ClassificationForest(numTrees, numFeatures, maxDepth);
 mod := F.GetModel(X, Y, nominalFields);
 OUTPUT(mod, NAMED('model'));
-nodes := F.Model2Nodes(mod);
-OUTPUT(nodes, {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, id}, NAMED('TreeNodes'));
+nodes := SORT(F.Model2Nodes(mod), wi, treeId, level, nodeId);
+OUTPUT(nodes, {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, ir}, NAMED('TreeNodes'));
 modStats := F.GetModelStats(mod);
 OUTPUT(modStats, NAMED('ModelStatistics'));
 classWeights := F.Model2ClassWeights(mod);
@@ -69,3 +71,6 @@ OUTPUT(errStats, NAMED('Accuracy'));
 
 confusion := F.ConfusionMatrix(Xtest, Ycmp, mod, balanceClasses);
 OUTPUT(confusion, NAMED('ConfusionMatrix'));
+
+fi := F.FeatureImportance(mod);
+OUTPUT(fi, NAMED('FeatureImportance'));
