@@ -1,3 +1,6 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 IMPORT $ AS LT;
 IMPORT LT.LT_Types AS Types;
 IMPORT ML_Core;
@@ -107,18 +110,6 @@ ClassProbs := Types.ClassProbs;
       RETURN probsS;
     END;
 
-    /**
-      * Extract the set of tree nodes from a model
-      *
-      * @param mod A model as returned from GetModel
-      * @return Set of tree nodes representing the fitted forest in DATASET(TreeNodeDat) format
-      */
-    EXPORT DATASET(TreeNodeDat) Model2Nodes(DATASET(Layout_Model2) mod) := FUNCTION
-      myRF := int.RF_Classification();
-      nodes0 := myRF.Model2Nodes(mod);
-      nodes := SORT(nodes0, wi, treeId, level, nodeId, LOCAL);
-      RETURN nodes;
-    END;
     /**
       * Extract the set of class weights from the model
       *

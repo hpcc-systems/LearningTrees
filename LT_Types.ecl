@@ -1,3 +1,6 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 IMPORT $ AS LT;
 IMPORT ML_core;
 IMPORT ML_core.Types as CTypes;
@@ -13,6 +16,7 @@ Layout_Model := CTypes.Layout_Model;
 DiscreteField := CTypes.DiscreteField;
 NumericField := CTypes.NumericField;
 NumericArray := ndArray.NumericArray;
+t_index := ndArray.t_index;
 
 /**
   * Type definition module for Learning Trees.
@@ -31,11 +35,11 @@ EXPORT LT_Types := MODULE
 
   /**
     * Definition of the meaning of the indexes of the Model's
-    * NumericArray.  rfModInd1 enumerates the first index, which
+    * NumericArray.  Ind1 enumerates the first index, which
     * is used to determine which type of data is stored.
     * - nodes stores the list of tree nodes that describes the forest.
     *         The second index is just the sequential number of the node
-    *         The third index is enumerated below (rfModNodes3).
+    *         The third index is enumerated below (Ind3_nodes).
     * - samples stores the set of sample indexes (i.e. ids) associated
     *         with each treeId.
     *         The second index represents the treeId.  The third index
@@ -45,19 +49,44 @@ EXPORT LT_Types := MODULE
     * - classWeights (ClassificationForest only) stores the weights associated
     *         with each class label.  The second index represents the class
     *         label.  The value is the weight.  [<classWeights>, <classLabel>] -> weight
-    *
+    *         Class weights are only stored for Classification Forests.
     */
-  EXPORT rfModInd1 := ENUM(UNSIGNED4, nodes = 1, samples = 2, classWeights = 3);
-  /**
-    * rfModNodes3 provides the enumeration of the meaning of the third index
-    * when the first index indicates nodes.
-    */
-  EXPORT rfModNodes3 := ENUM(UNSIGNED4, treeId = 1, level = 2, nodeId = 3, parentId = 4, isLeft = 5, number = 6, value = 7, isOrdinal = 8, depend = 9, support = 10);
-  // End of model definition
+  EXPORT Forest_Model := MODULE
+    /**
+      * Index 1 represents the category of data within the model
+      */
+    EXPORT Ind1 := MODULE
+      EXPORT t_index nodes := 1;
+      EXPORT t_index samples := 2;
+      EXPORT t_index classWeights := 3;
+    END;
+    /**
+      * For tree node data (i.e. Ind1 = nodes), the following
+      * constant definitions are used for the different fields
+      * of the tree-node.
+      * Note that Ind1 indicates tree nodes, Ind2 represents the different nodes
+      * and Ind3 defines the different fields.  For example, the treeId for the
+      * first node would be stored at [1,1,1].  These correspond to the persisted
+      * fields of TreeNodeDat with similar names.
+      */
+    EXPORT Ind3_Nodes := MODULE
+      EXPORT t_index treeId := 1;
+      EXPORT t_index level := 2;
+      EXPORT t_index nodeId := 3;
+      EXPORT t_index parentId := 4;
+      EXPORT t_index isLeft := 5;
+      EXPORT t_index number := 6;
+      EXPORT t_index value := 7;
+      EXPORT t_index isOrd := 8;
+      EXPORT t_index depend := 9;
+      EXPORT t_index support := 10;
+      EXPORT t_index ir := 11;
+    END;
+  END;
 
   /**
     * GenField extends NumericField by adding an isOrdinal field.  This
-    * allows both Ordinal and Nominal data to be held by the same record type.
+    * allows both Ordered and Nominal (Categorical) data to be held by the same record type.
     *
     */
   EXPORT GenField := RECORD(NumericField)
@@ -91,6 +120,8 @@ EXPORT LT_Types := MODULE
     *       parentId -- The nodeId of the branch at the previous level that leads to this
     *                   node.  Zero only for root.
     *       level -- The distance from the root (root = 1)
+    *       support -- The number of data points that reach this node
+    *       ir -- The impurity reduction for this split
     *   2b) It represents leaf nodes:
     *       id = 0 -- All data was subsumed
     *       number = 0 -- This discriminates a leaf from a branch node
@@ -114,6 +145,7 @@ EXPORT LT_Types := MODULE
     t_Discrete    origId;        // The sample index (id) of the original X data that this sample came from
     t_FieldReal   depend;        // Instance Dependent value
     t_RecordId   support:=0;    // Number of data samples subsumed by this node
+    t_FieldReal  ir;            // Impurity reduction at this node (branches only)
   END;
 
   /**
@@ -137,10 +169,11 @@ EXPORT LT_Types := MODULE
     t_Work_Item wi;
     t_TreeID treeId;
     t_NodeID nodeId;
-    t_NodeID parentId;     // Note that for any given (wi, treeId, nodeId, parentId and isLeft
+    t_NodeID parentId;     // Note that for any given (wi, treeId, nodeId), parentId and isLeft
                            //   will be constant, but we need to carry them through to maintain
                            //   the integrity of the nodes' relationships.
     BOOLEAN isLeft:=True;
+    t_RecordId support;   // The number of data samples reaching this node.
   END;
   /**
     * SplitDat is used to hold information about a potential split
@@ -150,6 +183,7 @@ EXPORT LT_Types := MODULE
     t_FieldReal splitVal;  // This is the value at which to split <= splitval => LEFT >splitval
                            // => right
     BOOLEAN isOrdinal;     // We need to carry this along
+    t_FieldReal ir;        // Impurity reduction at this split
   END;
 
   /**
@@ -184,9 +218,19 @@ EXPORT LT_Types := MODULE
     * @field maxTreeNodes The number of nodes in the biggest tree
     * @field avgTreeNodes The average number of nodes for all trees
     * @field totalNodes The number of nodes in the forest
-    * @field minSupport The minimum sum of support for all trees
+    * @field minSupport The minimum sum of support for all trees.
+    *                   Support indicates the number of training datapoints
+    *                   that arrived at a given leaf node
     * @field maxSupport The maximum sum of support for all trees
     * @field agvSupport The average sum of support for all trees
+    * @field avgSupportPerLeaf The average number of datapoints per
+    *                     leaf across the forest
+    * @field maxSupportPerLeaf The maximum datapoints at any single
+    *                     leaf across the forest
+    * @field avgLeafDepth The average depth for all leaf nodes
+    *                     for all trees
+    * @field minLeafDepth The minimum depth for all leaf nodes
+    *                     for all trees
     */
   EXPORT ModelStats := RECORD
     t_Work_Item wi;
@@ -194,12 +238,32 @@ EXPORT LT_Types := MODULE
     UNSIGNED minTreeDepth;
     UNSIGNED maxTreeDepth;
     REAL avgTreeDepth;
-    REAL minTreeNodes;
-    REAL maxTreeNodes;
+    UNSIGNED minTreeNodes;
+    UNSIGNED maxTreeNodes;
     REAL avgTreeNodes;
     UNSIGNED totalNodes;
     UNSIGNED minSupport;
     UNSIGNED maxSupport;
-    UNSIGNED avgSupport;
+    REAL avgSupport;
+    REAL avgSupportPerLeaf;
+    UNSIGNED maxSupportPerLeaf;
+    REAL avgLeafDepth;
+    UNSIGNED minLeafDepth;
+  END;
+  /**
+    * Feature Importance Record
+    *
+    * Describes the importance of each feature
+    * @field wi The work-item associated with this information
+    * @field number The feature number
+    * @field importance The 'importance' metric.  Higher value is more
+    *                   important.
+    * @field uses The number of times the feature was used in the forest
+    */
+  EXPORT FeatureImportanceRec := RECORD
+    t_Work_Item wi;
+    t_FieldNumber number;
+    t_FieldReal importance;
+    UNSIGNED uses;
   END;
 END; // LT_Types

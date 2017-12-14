@@ -88,7 +88,7 @@ outLine = '  END;'
 outLines.append(outLine)
 outLines.append('')
 
-outLine = '  EXPORT numCols := ' + str(len(columnsOut)) + ';'
+outLine = '  EXPORT numCols := ' + str(len(columnsOut)-1) + ';'
 outLines.append(outLine)
 outLine = '  EXPORT SET OF UNSIGNED nominalCols := ['
 colList = []

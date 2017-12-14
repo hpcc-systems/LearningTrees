@@ -1,3 +1,6 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 
 IMPORT $.datasets.CovTypeDS;
 IMPORT $.^ AS LT;

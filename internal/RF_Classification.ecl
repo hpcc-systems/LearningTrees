@@ -1,3 +1,6 @@
+/*##############################################################################
+## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
+############################################################################## */
 IMPORT $.^ AS LT;
 IMPORT LT.internal AS int;
 IMPORT LT.LT_Types AS Types;
@@ -36,9 +39,6 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
                           UNSIGNED featuresPerNode=0,
                           UNSIGNED maxDepth=255) := MODULE(int.RF_Base(X_in, Y_in, numTrees,
                                                             featuresPerNode, maxDepth))
-  SHARED allowNoProgress := TRUE;  // If FALSE, tree will terminate when no progess can be made on any
-                                   // feature.  For RF, should be TRUE since it may get a better choice
-                                   // of features at the next level.
   SHARED minImpurity := .0000001;   // Nodes with impurity less than this are considered pure.
   SHARED classWeightsRec := RECORD
     t_work_item wi;
@@ -70,44 +70,61 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     // At this point, nodeVarDat has one record per node per selected feature per id
     // Start by getting a list of all the values for each feature per node
     featureVals := TABLE(nodeVarDat, {wi, treeId, nodeId, number, value, isOrdinal,
-                            cnt := COUNT(GROUP)},
+                            cnt := COUNT(GROUP), REAL8 altVal := 0},
                           wi, treeId, nodeId, number, value, isOrdinal, LOCAL);
+    // Set altVal to the midpoint between feature values (for ordered values) or 'value' otherwise.
+    // Note that the first value for each ordered feature will end up with altVal = value, since there
+    // is no LEFT record.  These will be eliminated later as they are not a valid split point.
+    featureValsS := SORT(featureVals, wi, treeId, nodeId, number, value, LOCAL);
+    featureValsM := ITERATE(featureValsS, TRANSFORM({featureVals},
+                              SELF.altVal := IF(RIGHT.wi = LEFT.wi AND LEFT.treeId = RIGHT.treeId AND
+                                              LEFT.nodeId = RIGHT.nodeId AND LEFT.number = RIGHT.number AND RIGHT.isOrdinal,
+                                              //LEFT.value + .00001, RIGHT.value),
+                                              (LEFT.value + RIGHT.value)/2, RIGHT.value),
+                              SELF := RIGHT), LOCAL);
     // Calculate the number of values per feature per node
-    features0 := TABLE(featureVals, {wi, treeId, nodeId, number, tot := SUM(GROUP, cnt), gmax := MAX(GROUP, value),
+    features := TABLE(featureVals, {wi, treeId, nodeId, number, isOrdinal, tot := SUM(GROUP, cnt),
                             vals := COUNT(GROUP)},
-                          wi, treeId, nodeId, number, LOCAL);
-    //features := features0(vals > 1); // Eliminate any features with constant value for the node
-    features := features0;
+                          wi, treeId, nodeId, number, isOrdinal, LOCAL);
+    // We want to eliminate constant features (i.e. features with only one value for a node) from
+    // consideration.  But we have to guard against the case where all of the selected features are
+    // constant.  To do that, we save one constant feature per node in case we have to resort to
+    // using it later.
+    constantFeatures := features(vals = 1);
+    dummySplits := DEDUP(constantFeatures, wi, treeId, nodeId, LOCAL);
     // Note that auto-binning occurs here (if enabled). If there are more values for
     // a feature than autobinSize, randomly select potential split values with probability:
     // 1/(number-of-values / autobinSize).
     // Note: For efficiency, we use autobinSize * 2**32-1 so that we can directly compare to RANDOM()
     //       without having to divide by 2**32-1
-    featureVals2 := JOIN(featureVals, features, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId
+    goodFeatures := features(vals > 1);
+    featureVals2 := JOIN(featureValsM, goodFeatures, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId
                             AND LEFT.nodeId = RIGHT.nodeId AND LEFT.number = RIGHT.number,
-                          TRANSFORM({featureVals, REAL prop, REAL plogp, t_FieldReal gmax, UNSIGNED tot},
+                          TRANSFORM({featureVals, REAL prop, REAL plogp},
                                       SELF.prop := LEFT.cnt / RIGHT.tot,
                                       SELF.plogp := P_Log_P(SELF.prop),
-                                      SELF.gmax := RIGHT.gmax,
-                                      SELF.tot := IF(autoBin = FALSE OR
+                                      SELF.altVal := IF(LEFT.isOrdinal AND LEFT.value = LEFT.altVal OR
+                                        (autoBin = FALSE OR
                                         RIGHT.vals < autobinSize OR
-                                        RANDOM() < autobinSizeScald/RIGHT.vals,
-                                        RIGHT.tot, SKIP),
+                                        RANDOM() < autobinSizeScald/RIGHT.vals),
+                                        LEFT.altVal, SKIP),
                                       SELF := LEFT), LOCAL);
     // Filter the feature values so that we don't replicate data for the last data-point, except
     // for nominal features with more than two values.  This is strictly an optimization, since for
     // binary nominals, splitting on one value is the same as splitting on the other, and for ordinals,
     // if the last value is used, it will not result in any information gain since all data will be
     // to the left of the split.
-    featureVals3 := featureVals2((NOT isOrdinal AND tot > 2) OR value != gmax);
+    //featureVals3 := featureVals2((NOT isOrdinal AND tot > 2) OR value != gmax);
     // Replicate each datapoint for the node to every possible split for that node
     // Mark each datapoint as being left or right of the split.  Handle both Ordinal and Nominal cases.
-    allSplitDat := JOIN(nodeVarDat, featureVals3, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId
+    allSplitDat := JOIN(nodeVarDat, featureVals2, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId
                         AND RIGHT.nodeId = LEFT.nodeId AND LEFT.number = RIGHT.number,
-                      TRANSFORM({TreeNodeDat, t_FieldReal splitVal}, SELF.splitVal := RIGHT.value,
+                      TRANSFORM({TreeNodeDat, t_FieldReal splitVal},
+                                //SELF.splitVal := RIGHT.value,
+                                SELF.splitVal := RIGHT.altVal,
                                 SELF.isLEFT := IF((LEFT.isOrdinal AND LEFT.value <= SELF.splitVal)
                                                   OR (NOT LEFT.isOrdinal AND LEFT.value = SELF.splitVal),TRUE, FALSE),
-                                SELF := LEFT), LEFT OUTER, LOCAL);
+                                SELF := LEFT), LOCAL);
     // Calculate the entropy of the left and right groups of each split
     // Group by value of Y (depend) for left and right splits
     dependGroups := TABLE(allSplitDat, {wi, treeId, nodeId, number, splitVal, isLeft, depend,
@@ -145,16 +162,37 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     // In order to stop the tree-building process when there is no split that gives information-gain
     // we set 'number' to zero to indicate that there is no best split when we hit that case.
     // That happens when the data is not fully separable by the independent variables.
+    // Not that field ir (impurity reduction) is a generic term that encompasses ig.
+    // In the case where there are no valid (non constant) features to split on, we mark the node by
+    // setting 'number' to maxU4 so we can fix it up later.
     ig := JOIN(lowestEntropies, parentEntropy, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
                   LEFT.nodeId = RIGHT.nodeId,
-                TRANSFORM({entropies, t_NodeID parentId, BOOLEAN isLeft, REAL ig},
-                          SELF.ig := RIGHT.impurity - LEFT.totEntropy,
-                          SELF.number := IF(SELF.ig > 0 OR allowNoProgress, LEFT.number, 0),
-                          SELF.parentId := RIGHT.parentId, SELF.isLeft := RIGHT.isLeft, SELF := LEFT),
-                LOCAL);
-    // Choose the split with the greatest information gain for each node
-    bestSplits := ig;
-    RETURN PROJECT(bestSplits, SplitDat);
+                TRANSFORM({entropies, t_NodeID parentId, BOOLEAN isLeft, REAL ir, t_RecordId support},
+                          SELF.ir := IF(LEFT.number > 0, RIGHT.impurity - LEFT.totEntropy, 0),
+                          SELF.number := IF(LEFT.number = 0 AND allowNoProgress, maxU4, IF(SELF.ir > 0 OR allowNoProgress,
+                                              LEFT.number, 0)),
+                          SELF.wi := RIGHT.wi,
+                          SELF.treeId := RIGHT.treeId,
+                          SELF.nodeId := RIGHT.nodeId,
+                          SELF.parentId := RIGHT.parentId,
+                          SELF.isLeft := RIGHT.isLeft,
+                          SELF.support := RIGHT.support,
+                          SELF := LEFT
+                          ),
+                RIGHT OUTER, LOCAL);
+    // Choose the split with the greatest information gain for each node.
+    // In the case where we had no non-constant splits we fill in with an arbitrary one of the constant
+    // splits so that we can keep the tree growing with the next set of selected features on the next
+    // round.  Otherwise, the tree would be truncated.
+    bestSplits := JOIN(ig, dummySplits, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
+                         LEFT.nodeId = RIGHT.nodeId,
+                         TRANSFORM(SplitDat,
+                            SELF.number := IF(LEFT.number = maxU4, RIGHT.number, LEFT.number),
+                            SELF.splitVal := IF(LEFT.number = maxU4, maxR8, LEFT.splitVal), // Force LEFT
+                            SELF.isOrdinal := IF(LEFT.number = maxU4, RIGHT.isOrdinal, LEFT.isOrdinal),
+                            SELF := LEFT), LEFT OUTER, LOCAL);
+
+    RETURN bestSplits;
   END;
 
   // Grow one layer of the forest
@@ -179,9 +217,13 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     // Note that for any (wi, treeId, nodeId), parentId and isLeft will be constant, but we need to carry
     //   them forward.
     nodeEnt0 := TABLE(nodeEntInfo, {wi, treeId, nodeId, parentId, isLeft,
-                                       entropy := SUM(GROUP, plogp)}, wi, treeId, nodeId, parentId, isLeft, LOCAL);
+                                       entropy := SUM(GROUP, plogp),
+                                       t_RecordId tot := SUM(GROUP, cnt)},
+                                   wi, treeId, nodeId, parentId, isLeft, LOCAL);
     // Node impurity
-    nodeImp := PROJECT(nodeEnt0, TRANSFORM(NodeImpurity, SELF.impurity := LEFT.entropy, SELF := LEFT));
+    nodeImp := PROJECT(nodeEnt0, TRANSFORM(NodeImpurity, SELF.impurity := LEFT.entropy,
+                                            SELF.support := LEFT.tot,
+                                            SELF := LEFT));
 
     // Filtering pure and non-pure nodes. We translate any pure nodes and their associated data into a leaf node.
     // Impure nodes need further splitting, so they are passed into the next phase.
@@ -211,10 +253,14 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
                         LOCAL);
     // Now redistribute the results by treeId for further analysis.  Sort for further analysis.
     toSplitDat := DISTRIBUTE(toSplitDat2, HASH32(wi, treeId));
-//    toSplitDat := SORT(DISTRIBUTE(toSplitDat2, HASH32(wi, treeId)), wi, treeId, nodeId, LOCAL);
+
+    // Filter nodeImp so that only the "not pure enough" nodes are included.  This is important
+    // because we use this as the set of nodes for which we need to find best splits.
+    parentNodeImp := nodeImp(impurity >= minImpurity AND treeLevel < maxDepth);
 
     // Now try all the possible splits and find the best
-    bestSplits := findBestSplit(toSplitDat, nodeImp);
+    bestSplits := findBestSplit(toSplitDat, parentNodeImp);
+
     // Reasonable splits were found
     goodSplits := bestSplits(number != 0);
     // No split made any progress, or we are at maxDepth for the tree
@@ -276,6 +322,8 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
                           SELF.isOrdinal := LEFT.isOrdinal,
                           SELF.parentId := LEFT.parentId,
                           SELF.isLeft := LEFT.isLeft,
+                          SELF.support := LEFT.support,
+                          SELF.ir := LEFT.ir,
                           SELF := []));
     // Now handle the leaf nodes, which are the pure-enough nodes, plus the bad splits (i.e. no good
     // split left).
@@ -314,51 +362,7 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
   SHARED DATASET(ClassProbs) FClassProbabilities(DATASET(TreeNodeDat) tNodes, DATASET(GenField) X,
                                                   DATASET(classWeightsRec) classWts=emptyClassWeights) := FUNCTION
     modTreeCount := MAX(tNodes, treeId);  // Number of trees in the model
-    // Distribute X by wi and id.
-    xD := DISTRIBUTE(X, HASH32(wi, id));
-    // Extend each root for each ID in X
-    roots := tNodes(level = 1);
-    rootsExt := JOIN(xD(number=1), roots, LEFT.wi = RIGHT.wi, TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT),
-                     MANY, LOOKUP);
-    // RootsExt is now distributed by wi, id.
-    rootBranches := rootsExt(number != 0); // Roots are almost always branch (split) nodes.
-    rootLeafs := rootsExt(number = 0); // Unusual but not impossible
-    loopBody(DATASET(TreeNodeDat) levelBranches, UNSIGNED tLevel) := FUNCTION
-      // At this point, we have one record per node, per id.
-      // We extend each id down the tree one level at a time, picking the correct next nodes
-      // for that id at each branch.
-      // Next nodes are returned -- both leafs and branches.  The leafs are filtered out by the LOOP,
-      // while the branches are send on to the next round.
-      // Ultimately, a leaf is returned for each id and tree, which defines our final result.
-      // Select the next nodes by combining the selected data field with each node
-      // Note that:  1) we retain the id from the previous round, but the field number(number) is derived from the branch
-      //             2) 'value' in the node is the value to split upon, while value in the data (X) is the value of that
-      //                  datapoint
-      branchVals := JOIN(levelBranches, xD, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id AND LEFT.number = RIGHT.number,
-                          TRANSFORM({TreeNodeDat, BOOLEAN branchLeft},
-                                      SELF.branchLeft :=  ((LEFT.isOrdinal AND RIGHT.value <= LEFT.value) OR
-                                                          ((NOT LEFT.isOrdinal) AND RIGHT.value = LEFT.value)),
-                                      SELF.parentId := LEFT.nodeId, SELF := LEFT),
-                          LOCAL);
-      // BranchLeft is now true for all records that need to go down the left branch and false for those on the
-      // right branch.
-      nextLevelNodes := tNodes(level = tLevel + 1);
-      // Use LOOKUP JOIN so that nextLevelNodes gets replicated to every node where it is needed.
-      // NextLevelSelNodes is left distributed by wi, id.
-      nextLevelSelNodes := JOIN(branchVals, nextLevelNodes, LEFT.wi = RIGHT.wi AND
-                              LEFT.treeId = RIGHT.treeId AND LEFT.nodeId = RIGHT.parentId AND
-                              LEFT.branchLeft = RIGHT.isLeft,
-                              TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT), LOOKUP);
-      // Return the selected nodes at the next level.  These nodes may be leafs or branches.
-      // Any leafs will be filtered out by the loop.  Any branches will go on to the next round.
-      // When there are no more branches to process, we are done.  The selected leafs for each datapoint
-      // is returned.
-      RETURN nextLevelSelNodes;
-    END; // Loop Body
-    // The loop will return the leaf node associated with each sample for each tree.
-    selectedLeafs0 := LOOP(rootBranches, LEFT.number>0, EXISTS(ROWS(LEFT)),
-                          loopBody(ROWS(LEFT), COUNTER));
-    selectedLeafs := selectedLeafs0 + rootLeafs;
+    selectedLeafs := GetLeafsForData(tNodes, X);
     // At this point, we have one leaf node per tree per datapoint (X)
     // The leaf nodes contain the final class in their 'depend' field.
     // Now we need to count the votes for each class and id
@@ -405,7 +409,7 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     *
     */
   EXPORT Model2ClassWeights(DATASET(Layout_Model2) mod) := FUNCTION
-    modCW := ndArray.Extract(mod, [Types.rfModInd1.classWeights]);
+    modCW := ndArray.Extract(mod, [FM1.classWeights]);
     cw := PROJECT(modCW, TRANSFORM(classWeightsRec, SELF.wi := LEFT.wi, SELF.classLabel := LEFT.indexes[1],
                                         SELF.weight := LEFT.value));
     RETURN cw;
@@ -452,7 +456,7 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     mod2 := Indexes2Model;
     baseMod := mod1 + mod2;
     naClassWeights := PROJECT(classWeights, TRANSFORM(ndArray.NumericArray, SELF.wi := LEFT.wi,
-                                                        SELF.indexes := [Types.rfModInd1.classWeights, LEFT.classLabel],
+                                                        SELF.indexes := [FM1.classWeights, LEFT.classLabel],
                                                         SELF.value := LEFT.weight));
     mod := baseMod + naClassWeights;
     RETURN mod;
