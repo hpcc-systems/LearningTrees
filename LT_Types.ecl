@@ -249,7 +249,8 @@ EXPORT LT_Types := MODULE
     UNSIGNED maxSupportPerLeaf;
     REAL avgLeafDepth;
     UNSIGNED minLeafDepth;
-  END;
+
+  END; // ModelStats
   /**
     * Feature Importance Record
     *
@@ -265,5 +266,46 @@ EXPORT LT_Types := MODULE
     t_FieldNumber number;
     t_FieldReal importance;
     UNSIGNED uses;
+  END;
+
+  // FieldName_Mapping is the format produced by ToField for field-name mapping.
+  // This should be moved to ML_Core.
+  EXPORT Field_Mapping := RECORD
+    STRING orig_name;      // The name of the field in the original layout
+    STRING assigned_name;  // The integer field number used in the ML algorithm
+  END;
+  // Luci Record -- A dataset of lines each containing a string
+  // This should be moved to ML_Core.
+  EXPORT LUCI_Rec := RECORD
+    STRING line;
+  END;
+  /**
+    * Structure used to describe the Scorecards for LUCI format export.
+    *
+    * For a single scorecard model, a single LUCI_Scorecard record is used.
+    * For multiple scorecards, one record is required per scorecard.
+    * One L2SC or L2FO record will be generated per scorecard, and additionally
+    * One L2SE record will be generated for each scorecard with a non-blank
+    * ‘filter_expr’.
+    *
+    * @field wi_num The work-item number on which to base this scorecard or ‘1’ if only one
+    *               work-item / scorecard us used.
+    * @field scorecard_name The LUCI name for this scorecard.
+    * @field filter_expr Optional -- An expression on the LUCI input dataset layout that selects
+    *                    the records to be included in this scorecard (e.g. 'state_id = 2').
+    *                    If the expression contains strings, the single-quotes must be preceded
+    *                    by a backslash escape character (e.g. 'state = \'NY\'').
+    *                    The filter expression must follow ECL Boolean expression syntax.
+    *                    It should be blank if all records are to be used.  See L2SE LUCI
+    *                    record format, Scorecard-Election-Criteria for more details.
+    * @field fieldMap    A DATASET(Field_Mapping) as returned from the FromField macro that maps the Field Names
+    *                    (as used in the LUCI definition) to the field numbers (as used in the ML model).
+    *                    Note: must be the same set of fields used in training the forest for this work item.
+    */
+  EXPORT LUCI_Scorecard := RECORD
+    UNSIGNED wi_num := 1;
+    STRING scorecard_name;
+    STRING filter_expr := '';
+    DATASET(Field_Mapping) fieldMap;
   END;
 END; // LT_Types

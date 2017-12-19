@@ -160,4 +160,29 @@ TreeNodeDat := Types.TreeNodeDat;
     uf := myRF.UniquenessFactor(mod, NF2GenField(X1), NF2GenField(X2));
     RETURN uf;
     END;
+
+  /**
+    * Compress and cleanup the model
+    *
+    * This function is provided to reduce the size of a model by compressing out
+    * branches with only one child.  These branches are a result of the RF algorithm,
+    * and do not affect the results of the model.
+    * This is an expensive operation, which is why it is not done as a matter of
+    * course.  It reduces the size of the model somewhat, and therefore slightly speeds
+    * up any processing that uses the model, and reduces storage size.
+    * You may want to compress the model if storage is at a premium, or if the model
+    * is to be used many times (so that the slight performance gain is multiplied).
+    * This also makes the model somewhat more readable, and could
+    * be useful when analyzing the tree or converting it to another system
+    * (e.g. LUCI) for processing.
+    *
+    * @param mod Model as returned from GetModel in Layout_Model2 format
+    * @return The Compressed Model
+    *
+    */
+  EXPORT CompressModel(DATASET(Layout_Model2) mod) := FUNCTION
+    myRF := int.RF_Base();
+    cMod := myRF.CompressModel(mod);
+    RETURN cMod;
+  END;
 END;

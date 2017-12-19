@@ -7,7 +7,7 @@ IMPORT LT.LT_Types AS Types;
 IMPORT ML_Core as ML;
 IMPORT ML.Types AS CTypes;
 IMPORT std.system.Thorlib;
-IMPORT ndArray;
+IMPORT LT.ndArray;
 
 GenField := Types.GenField;
 TreeNodeDat := Types.TreeNodeDat;
@@ -450,7 +450,6 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     *
     */
   EXPORT DATASET(Layout_Model2) GetModel := FUNCTION
-    //baseMod := int.RF_Base.GetModel;
     nodes := GetNodes;
     mod1 := Nodes2Model(nodes);
     mod2 := Indexes2Model;

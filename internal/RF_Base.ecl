@@ -8,7 +8,6 @@ IMPORT ML_Core as ML;
 IMPORT ML.Types AS CTypes;
 IMPORT std.system.Thorlib;
 IMPORT LT.ndArray;
-//IMPORT Types.Forest_Model AS FM;
 GenField := Types.GenField;
 ModelStats := Types.ModelStats;
 t_Work_Item := CTypes.t_Work_Item;
@@ -293,6 +292,84 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     RETURN selectedLeafs;
   END; // GetLeafsForData
   /**
+    * During RF training, we will occasionally hit a situation where all of the randomly selected
+    * features for a level of the tree are constant for a node.  In this case, we are forced to insert
+    * a dummy-split using a random feature from the selected subset in order to continue processing the
+    * data.  We should see other useful features in subsequent rounds.  In this case, we set the splitVal
+    * to MaxR8 (the maximum value for a REAL8 field) so that all data will take the left path.
+    * This function removes such dummy splits and replaces that node with its child nodes, resulting
+    * in a smaller tree which should be faster to process for prediction / classification of new points,
+    * as well as any analytic operations.
+    */
+  SHARED DATASET(TreeNodeDat) CompressNodes(DATASET(TreeNodeDat) inNodes) := FUNCTION
+    nodesS := SORT(DISTRIBUTE(inNodes, HASH32(wi, treeId)), wi, treeId, level, nodeId, LOCAL);
+    // Assign a unique id to each node, independent of level.  We can re-use the id field
+    // since it is not used at this point.  Note, these only need to be unique within a
+    // tree, but using LOCAL PROJECT is efficient.  It will asssign a unique id to all
+    // nodes across trees that are on the node.  Note that tree-nodes are distributed by
+    // wi and treeId at this point.
+    xNodes0 := PROJECT(nodesS, TRANSFORM(TreeNodeDat,
+                                        SELF.id := COUNTER,
+                                        SELF := LEFT), LOCAL);
+    // Now add the parent's unique ID to each record, so that the parent relationship is now
+    // independent of level.
+    xNodes := JOIN(xNodes0, xNodes0, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND LEFT.level = RIGHT.level + 1
+                                        AND LEFT.parentId = RIGHT.nodeId,
+                                     TRANSFORM({TreeNodeDat, t_RecordID parentGuid},
+                                                SELF.parentGuid := RIGHT.id;
+                                                SELF := LEFT), LEFT OUTER, LOCAL);
+    compressOneLevel(DATASET({xNodes}) cNodes, UNSIGNED tLevel) := FUNCTION
+      // Find the nodes that need to be compressed out at this level
+      compressNodes := SORT(cNodes(level = tLevel AND value = maxR8 AND number != 0 ), wi, treeId, id, LOCAL);
+      // Find the children of the nodes to be compressed, and link them to the compressNode's parent
+      // Note that there should only be one child for each compress node and it should be the left node,
+      // but it needs to be also assigned the compressNode's isLeft.
+      childNodes := SORT(cNodes(level = tLevel + 1), wi, treeId, parentGuid, LOCAL);
+      replaceNodes := JOIN(compressNodes, childNodes, LEFT.wi = RIGHT.wi AND
+                        LEFT.treeId = RIGHT.treeId AND LEFT.id = RIGHT.parentGuid,
+                        TRANSFORM({compressNodes},
+                                  SELF.parentGuid := LEFT.parentGuid,
+                                  SELF.isLeft := LEFT.isLeft,
+                                  SELF.depend := 666,  // Temp Diagnostic
+                                  SELF := RIGHT), LOCAL);
+      // Eliminate the compressNodes and the child nodes and replace with the new child nodes
+      outLevelNodes := cNodes(level = tLevel AND (value != maxR8 OR number = 0));
+      outNextLevelNodes := JOIN(childNodes, replaceNodes, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
+                                                                    LEFT.id = RIGHT.id,
+                                                          TRANSFORM(LEFT), LEFT ONLY, LOCAL);
+      outNodes := outLevelNodes + replaceNodes + outNextLevelNodes + cNodes(level > tLevel + 1);
+      RETURN outNodes;
+    END; // CompressOneLevel
+    newNodes := LOOP(xNodes, maxDepth, LEFT.level >= COUNTER,
+                          compressOneLevel(ROWS(LEFT), COUNTER));
+    // At this point, we have the correct set of nodes, but their level and local id's might be messed up.
+    // They are linked by the global id, but we need to fix up all the levels and localid's by traversing
+    // the tree from the top down using the global ids.
+    fixupOneLevel(DATASET({newNodes}) fNodes, UNSIGNED tLevel) := FUNCTION
+      // Start with the nodes for this level.  For the top-level (root), we use a different method
+      // (i.e. no parent) in case the root was originally a compressed node and the current root therefore
+      // has the level set wrong.
+      fNodesS := SORT(fNodes, wi, treeId, parentGuid, -isLeft, LOCAL);
+      levelNodes0 := IF(tLevel = 1, fNodesS(parentGuid = 0), fNodesS(level=tLevel));
+      // Make sure that the level is set correctly for these items, and re-assign the local id (nodeId).
+      levelNodes := PROJECT(levelNodes0, TRANSFORM({levelNodes0},
+                        SELF.level := tLevel, SELF.nodeId := COUNTER, SELF := LEFT), LOCAL);
+      // Now find all the children and set their level to tLevel + 1, and set the local parentId to the parent's nodeId
+      fNodesS2:= SORT(fNodes, wi, treeId, parentGuid, LOCAL);
+      nextLevelNodes := JOIN(levelNodes, fNodesS2, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
+                                LEFT.id = RIGHT.parentGuid,
+                              TRANSFORM({levelNodes}, SELF.parentId := LEFT.nodeId, SELF.level := tLevel + 1,
+                                SELF := RIGHT),
+                              LOCAL);
+      outNodes := levelNodes + nextLevelNodes + fNodes(level > tLevel + 1);
+      RETURN outNodes;
+    END; // fixupOneLevel
+    outNodes := LOOP(newNodes, maxDepth, LEFT.level >= COUNTER,
+                          fixupOneLevel(ROWS(LEFT), COUNTER));
+    outNodesS := SORT(outNodes, wi, treeId, level, nodeId, LOCAL);
+    RETURN PROJECT(outNodesS, TreeNodeDat);
+  END; // CompressNodes
+  /**
     * Extract the set of tree nodes from a model
     *
     */
@@ -391,6 +468,30 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     RETURN mod;
   END;
 
+  /**
+    * Compress and cleanup the model
+    *
+    * This function is provided to reduce the size of a model by compressing out
+    * branches with only one child.  These branches are a result of the RF algorithm,
+    * and do not affect the results of the model.
+    * This is an expensive operation, which is why it is not done as a matter of
+    * course.  It reduces the size of the model somewhat, and therefore slightly speeds
+    * up any processing that uses the model, and reduces storage size.
+    * You may want to compress the model if storage is at a premium, or if the model
+    * is to be used many times (so that the slight performance gain is multiplied).
+    * This also makes the model somewhat more readable, and could
+    * be useful when analyzing the tree or converting it to another system
+    * (e.g. LUCI) for processing.
+    *
+    */
+  EXPORT DATASET(Layout_Model2) CompressModel(DATASET(Layout_Model2) mod) := FUNCTION
+    nodes := Model2Nodes(mod);
+    cNodes := CompressNodes(nodes);
+    remainderMod := mod(indexes[1] != FM1.nodes);
+    cMod := Nodes2Model(cNodes) + remainderMod;
+    return cMod;
+  END;
+
   // ModelStats
   EXPORT GetModelStats(DATASET(Layout_Model2) mod) := FUNCTION
     nodes := Model2Nodes(mod);
@@ -437,7 +538,9 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     */
   EXPORT FeatureImportance(DATASET(Layout_Model2) mod) := FUNCTION
     nodes := Model2Nodes(mod);
-    featureStats := TABLE(nodes(number > 0), {wi, number, importance := SUM(GROUP, ir * support)/numTrees, uses := COUNT(GROUP)}, wi, number);
+    treeCount := MAX(nodes, treeId);
+    featureStats := TABLE(nodes(number > 0), {wi, number, importance := SUM(GROUP, ir * support)/treeCount,
+                          uses := COUNT(GROUP)}, wi, number);
     fi := SORT(PROJECT(featureStats, TRANSFORM(FeatureImportanceRec, SELF := LEFT)), wi, -importance);
     RETURN fi;
   END;

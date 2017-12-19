@@ -44,7 +44,7 @@ F := LT.ClassificationForest(numTrees, numFeatures, maxDepth);
 mod := F.GetModel(X, Y, nominalFields);
 OUTPUT(mod, NAMED('model'));
 nodes := SORT(F.Model2Nodes(mod), wi, treeId, level, nodeId);
-OUTPUT(nodes, {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, ir}, NAMED('TreeNodes'));
+OUTPUT(CHOOSEN(nodes, 500), {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, ir}, ALL, NAMED('TreeNodes'));
 modStats := F.GetModelStats(mod);
 OUTPUT(modStats, NAMED('ModelStatistics'));
 classWeights := F.Model2ClassWeights(mod);
