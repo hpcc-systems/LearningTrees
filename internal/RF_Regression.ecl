@@ -131,7 +131,7 @@ EXPORT RF_Regression(DATASET(GenField) X_in=DATASET([], GenField),
                          TRANSFORM(SplitDat,
                             SELF.number := IF(LEFT.number = maxU4, RIGHT.number, LEFT.number),
                             SELF.splitVal := IF(LEFT.number = maxU4, maxR8, LEFT.splitVal), // Force LEFT
-                            SELF.isOrdinal := IF(LEFT.number = maxU4, RIGHT.isOrdinal, LEFT.isOrdinal),
+                            SELF.isOrdinal := IF(LEFT.number = maxU4, TRUE, LEFT.isOrdinal), // Always treat as ordered
                             SELF := LEFT), LEFT OUTER, LOCAL);
     RETURN bestSplits;
   END; // FindBestSplit
@@ -248,7 +248,7 @@ EXPORT RF_Regression(DATASET(GenField) X_in=DATASET([], GenField),
                           SELF.isLeft := LEFT.isLeft,
                           SELF.isOrdinal := LEFT.isOrdinal,
                           SELF.support := LEFT.support,
-                          SELF.ir := LEFT.ir,
+                          SELF.ir := SQRT(LEFT.ir), // Use square root to reduce the scale.
                           SELF := []));
     // Now handle the leaf nodes, which are the pure-enough nodes, plus the bad splits (i.e. no good
     // split left).
