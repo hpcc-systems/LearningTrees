@@ -32,6 +32,7 @@ ClassProbs := Types.ClassProbs;
   * This module provides a Random Forest Classifier based on Breiman, 2001
   * with extensions.
   *
+  * See RF_Base for a description of the Theory of Operation of this module.
   */
 EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
                           DATASET(GenField) Y_In=DATASET([], GenField),

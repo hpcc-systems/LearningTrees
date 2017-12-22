@@ -8,6 +8,7 @@ IMPORT ML_Core as ML;
 IMPORT ML.Types AS CTypes;
 IMPORT std.system.Thorlib;
 IMPORT LT.ndArray;
+
 GenField := Types.GenField;
 ModelStats := Types.ModelStats;
 t_Work_Item := CTypes.t_Work_Item;
@@ -21,21 +22,118 @@ TreeNodeDat := Types.TreeNodeDat;
 NumericField := CTypes.NumericField;
 DiscreteField := CTypes.DiscreteField;
 Layout_Model2 := Types.Layout_Model2;
-//rfModInd1 := Types.rfModInd1;
-//rfModNodes3 := Types.rfModNodes3;
 FeatureImportanceRec := Types.FeatureImportanceRec;
-
 
 /**
   * Base Module for Random Forest algorithms.  Modules for RF Classification or Regression
   * are based on this one.
-  * It provides the attributes to set up the forest as well as s
+  * The random forest algorithm used is based on Brieman 2001 with extensions.
+  * It provides the attributes to set up the forest as well as storing of the resulting forest
+  * in a common model format.  It also provides various analytic methods.
+  *
+  * Theory of Operation
+  *
+  * The heart of the random forest algorithm is the building of a forest model (multiple
+  * diverse decision trees) by segmenting the training data through binary splits that
+  * increase the uniformity of the dependent variable as the tree is developed.
+  * In random forest, the trees are developed until the data after the final split is
+  * totally pure (i.e. all members have the same value of the dependent variable), or
+  * a maximum tree depth is encountered (configurable -- see maxDepth parameter).  If a
+  * maximum depth is encountered with an impure group on either or both sides, the remaining
+  * points are aggregated through an appropriate means (implementation dependent).
+  * When a pure group is obtained (either through purity or aggregation), the data points
+  * in that group are summarized by a "leaf node".  Each tree is therefore composed of
+  * split-nodes (i.e. branches) and leaf-nodes.
+  * The resulting forest model can then be used to perform predictions of the dependent
+  * variable given hitherto unseen samples of the independent variable.  In the case of
+  * a Regression Forest, the unobserved dependent variable is predicted as a continuous
+  * number.  In the case of a Classification Forest, the dependent variable takes the form
+  * of a discrete class identifier, and the prediction method is called "Classify".
+  * This implementation allows the independent variables to be continuous or discrete,
+  * and supports both ordered variables (e.g. quantitative -- real-numbers, integers) and
+  * categorical (aka "nominal") variables, which can represent qualitative info such as
+  * type, color, state, which are encoded with integer values. These different types of
+  * independent variables are encoded using the GenField dataset layout.
+  * Once a forest model has been created, new values are predicted by running each
+  * datapoint down the tree for each tree in the forest, arriving at a single leaf for
+  * each datapoint in each tree.  The final prediction is arrived at by aggregating
+  * the leaf value of all the trees in the forest for that point.  Depending on whether
+  * we are classifying or predicting a continous value (i.e. regression), a different
+  * aggregation method is used.  For classification, a voting method is used.  The most
+  * commonly predicted class is the final result.  For regression, the mean of all the
+  * trees' predictions is returned as the final result.
+  * Each tree can be thought of as an 'overfit' model since they will fit to not only
+  * the 'signal' in the data, but also the 'noise'.  The aggregation across the forest
+  * averages out most of the noise (due to the diversity of the trees).  This is a
+  * key strength of the random forest algorithm as it makes it robust against over-fitting.
+  * The diversity of the forest is achieved in a number of ways:
+  * 1) Each tree is built using a bootstrap of the original data.  That is, for each
+  *    tree, the data is sampled with replacement, resulting in a different set of
+  *    points used to create the tree.  On average, aroung 30% of the datapoints will
+  *    be missing from each tree due to replication of other points.
+  * 2) Each split node is created based on a random subset of features (the best split
+  *    for each subset is used).  This randomly eliminates some possible branches
+  *    for each split and causes each tree to grow in a unique fashion.
+  * 3) Unless auto-binning is disabled, for variables with many values (e.g. continuous)
+  *    the possible split points are randomly sampled so that only a smaller set of
+  *    points are considered for each split.  This technique provides better performance
+  *    while increasing the diversity of the trees in the forest, and is sometimes referred-
+  *    to as "extremely randomized foests".  This is the default mode of operation as it
+  *    seems to provide strong benefits without significant down-side.
+  * This base module provides the common methods for building and using the forest model,
+  * while the derived modules (e.g. ClassificationForest and RegressionForest) overlay
+  * virtual attributes that perform work specific to the type of forest.
+  * The basic steps in building the tree are:
+  * - Organize the input data:
+  *   - Identify the work-items and number of training records and features
+  *   - Ensure that the record ids are sequential
+  *   - Create a map of each of the feature numbers for each work-item
+  * - Generate random bootstrap samples for each tree
+  * - Create numTree tree root nodes
+  * - Replicate the training data bootstraps to each tree root
+  * - Build the trees, one layer at a time by:
+  *   - Randomly choose the featuresPerNode features to evaluate for a given level
+  *   - Evaluate all possible splits on those features to find the feature and split-point
+  *     that results in the most pure pair of sub-groups.  The criteria for evaluating
+  *     splits is different for the different forest types.
+  *   - Choose the best split, and create a split-node (branch) based on that split.
+  *   - Create a left and right child node at the next level under the split-node.
+  *   - Reallocate the data points from the node to the left or right child nodes.
+  *   - If any group is pure (i.e. same dependent value for all members) or we've reached
+  *     maxDepth, replace all the datapoints in that node with a single leaf node.
+  * - At the end of the process, all the datapoints will have been absorbed by leaf nodes,
+  *   and the resulting trees will contain only split-nodes and leaf-nodes.
+  * - Note that a single common data structure (see LT_Types.TreeNodeData) is used to
+  *   represent:
+  *   - Data-points that need to be processed for a node (only during tree growing)
+  *   - A split-node
+  *   - A leaf-node
+  * - The resulting tree-nodes representing the forest are converted to a Forest Model
+  *   for later use in prediction or analysis.
   */
 EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
               DATASET(GenField) Y_In=DATASET([], GenField),
               UNSIGNED numTrees=100,
               UNSIGNED featuresPerNodeIn=0,
               UNSIGNED maxDepth=255) := MODULE
+  // Resequence ids to go from 1-numRecords.
+  SHARED resequenceByWi(DATASET(GenField) dat) := FUNCTION
+    // Dat should be evenly distributed at this point
+    xGen := RECORD(GenField)
+      t_RecordId newId := 0;
+    END;
+    xDat := PROJECT(dat, TRANSFORM(xGen, SELF := LEFT));
+    xGen setNewIds(xGen l, xGen r) := TRANSFORM
+      newId := IF(l.wi != r.wi, 1, IF(r.id = l.id, l.newId, l.newId + 1));
+      SELF.newId := newId;
+      SELF := r;
+    END;
+    xDatS := SORT(xDat, wi, id);
+    xDat2 := ITERATE(xDatS, setNewIds(LEFT, RIGHT));
+    outDat0 := PROJECT(xDat2, TRANSFORM(GenField, SELF.id := LEFT.newId, SELF := LEFT));
+    outDat := DISTRIBUTE(outDat0, HASH32(wi, id));
+    return outDat;
+  END;
   SHARED autoBin := TRUE;
   SHARED autobinSize := 10;
   SHARED allowNoProgress := TRUE;  // If FALSE, tree will terminate when no progess can be made on any
@@ -43,14 +141,15 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
                                    // of features at the next level.
   SHARED maxU4 := 4294967295; // Maximum value for an Unsigned 4
   SHARED maxR8 := 1.797693e+308; // Maximum value for a REAL8
-  SHARED autobinSizeScald := autobinSize * maxU4;
-  SHARED X0 := DISTRIBUTE(X_in, HASH32(wi, id));
-  SHARED Y := DISTRIBUTE(Y_in, HASH32(wi, id));
-  SHARED X := SORT(X0, wi, id, number, LOCAL);
+  SHARED autobinSizeScald := autobinSize * maxU4; // Scaled auto-bin size for efficiency
+  SHARED XD := DISTRIBUTE(X_in, HASH32(wi, id));
+  SHARED YD := DISTRIBUTE(Y_in, HASH32(wi, id));
+  SHARED XSD := SORT(XD, wi, id, number, LOCAL);
+  SHARED YSD := SORT(YD, wi, LOCAL);  // Sort Y by work-item
   SHARED Rand01 := RANDOM()/maxU4; // Random number between zero and one.
 
-  // P log P calculation for entropy.  Note that Shannon entropy uses log base 2 so the division by LOG(2) is
-  // to convert the base from 10 to 2.
+  // P log P calculation for entropy.  Note that Shannon entropy uses log base 2 so the division by LN(2) is
+  // to convert the base from e to 2.
   SHARED P_Log_P(REAL P) := IF(P=1, 0, -P* LN(P) / LN(2));
 
   SHARED empty_model := DATASET([], Layout_Model2);
@@ -60,9 +159,12 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
   SHARED FM1 := FM.Ind1;
   SHARED FMN3 := FM.Ind3_nodes;
   // Calculate work-item metadata
-  Y_S := SORT(Y, wi);  // Sort Y by work-item
   // Each work-item needs its own metadata (i.e. numSamples, numFeatures, .  Construct that here.
-  wiMeta0 := TABLE(X, {wi, numSamples := MAX(GROUP, id), numFeatures := MAX(GROUP, number), featuresPerNode := 0}, wi);
+  SHARED wiSamples := TABLE(YSD, {wi, numSamples := COUNT(GROUP), maxId := MAX(GROUP, id)}, wi);
+  idFeatures := TABLE(XSD, {wi, id, numFeats := COUNT(GROUP), maxFNum := MAX(GROUP, number)}, wi, id, LOCAL);
+  SHARED wiFeatures := TABLE(idFeatures, {wi, numFeatures := MAX(GROUP, numFeats), maxNum := MAX(GROUP, maxFNum)}, wi);
+  wiMeta0 := JOIN(wiSamples, wiFeatures, LEFT.wi = RIGHT.wi, TRANSFORM({wiSamples, UNSIGNED numFeatures},
+                  SELF.numFeatures := RIGHT.numFeatures, SELF := LEFT));
   wiInfo makeMeta(wiMeta0 lr) := TRANSFORM
     // If featuresPerNode was passed in as zero (default), use the square root of the number of features,
     // which is a good rule of thumb.  In general, with multiple work-items of different sizes, it is best
@@ -73,6 +175,18 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     SELF := lr;
   END;
   SHARED wiMeta := PROJECT(wiMeta0, makeMeta(LEFT));
+  SHARED needsReseqTest := SUM(wiSamples, ABS(numSamples - maxId)) != 0;
+  SHARED X := IF(needsReseqTest, resequenceByWi(XSD), XSD);
+  SHARED Y := IF(needsReseqTest, resequenceByWi(YSD), YSD);
+  // Create a map of feature number -> sequential feature number (1-numFeatures) for each wi.
+  // Note: at this point, there has to be a record with id=1 for each work-item.
+  // Overload the id field (which is not needed here) with a sequential id (1-numFeatures)
+  // so that we can map between the two
+  allFeatures := SORT(X(id=1), wi, number);
+  allFeaturesG := GROUP(allFeatures, wi);
+  featureMap0 := PROJECT(allFeaturesG, TRANSFORM(GenField, SELF.id := COUNTER, SELF := LEFT));
+  SHARED featureMap := UNGROUP(featureMap0);
+  SHARED needFeatureRenumbering := COUNT(featureMap) != SUM(wiFeatures, maxNum);
 
   // Data structure to hold the sample indexes (i.e Bootstrap Sample) for each treeId
   SHARED sampleIndx := RECORD
@@ -99,7 +213,8 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
   // Distribute by treeId to create the samples in parallel
   treeDummyD := DISTRIBUTE(treeDummy, treeId);
   // Now generate samples for each treeId in parallel
-  SHARED treeSampleIndx :=NORMALIZE(treeDummyD, maxSampleSize, TRANSFORM(sampleIndx, SELF.origId := (RANDOM()%maxSampleSize) + 1, SELF.id := COUNTER, SELF := LEFT));
+  SHARED treeSampleIndx :=NORMALIZE(treeDummyD, maxSampleSize, TRANSFORM(sampleIndx,
+                            SELF.origId := (RANDOM()%maxSampleSize) + 1, SELF.id := COUNTER, SELF := LEFT));
 
   // Function to randomly select features to use for each level of the tree building.
   // Each node is assigned a random subset of the features.
@@ -145,9 +260,17 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     nodeVars4 := SORT(nodeVars3, wi, treeId, nodeId, rnd); // Mix up the features
     // Filter out the excess vars and transform back to TreeNodeDat.  Set id (not yet used) just as an excuse
     // to check the count and skip if needed.
-    nodeVars := UNGROUP(PROJECT(nodeVars4, TRANSFORM(TreeNodeDat,
+    nodeVars5 := UNGROUP(PROJECT(nodeVars4, TRANSFORM(TreeNodeDat,
                     SELF.id := IF(COUNTER <= LEFT.featuresPerNode, 0, SKIP),
                     SELF := LEFT)));
+    // If the user provided features numbers that were not sequential, we need to map these feature numbers
+    // (which are sequential) to the actual numbers the user provided.
+    renumberFeatures(DATASET(TreeNodeDat) dat) := FUNCTION
+      rnDat := JOIN(dat, featureMap, LEFT.wi = RIGHT.wi AND LEFT.number = RIGHT.id,
+                      TRANSFORM(TreeNodeDat, SELF.number := RIGHT.number, SELF := LEFT), LOOKUP);
+      RETURN rnDat;
+    END;
+    nodeVars := IF(needFeatureRenumbering, renumberFeatures(nodeVars5), nodeVars5);
     // At this point, we have <featuresPerNode> records for almost every node.  Occasionally one will have less
     // (but at least 1).
     // Now join with original nodeDat (one rec per tree node per id) to create one rec per tree node per id per
@@ -245,11 +368,12 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
   // Find the corresponding leaf node for each X sample given an expanded forest model (set of tree nodes)
   EXPORT DATASET(TreeNodeDat) GetLeafsForData(DATASET(TreeNodeDat) tNodes, DATASET(GenField) X) := FUNCTION
     // Distribute X by wi and id.
-    xD := DISTRIBUTE(X, HASH32(wi, id));
+    x_D := SORT(DISTRIBUTE(X, HASH32(wi, id)), wi, id, LOCAL);
+    x_ids := DEDUP(x_D, wi, id, LOCAL);
     // Extend each root for each ID in X
     // Leave the extended roots distributed by wi, id.
     roots := tNodes(level = 1);
-    rootsExt := JOIN(xD(number=1), roots, LEFT.wi = RIGHT.wi, TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT),
+    rootsExt := JOIN(x_ids, roots, LEFT.wi = RIGHT.wi, TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT),
                      MANY, LOOKUP);
     rootBranches := rootsExt(number != 0); // Roots are almost always branch (split) nodes.
     rootLeafs := rootsExt(number = 0); // Unusual but not impossible
@@ -265,7 +389,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
       //             2) 'value' in the node is the value to split upon, while value in the data (X) is the value of that datapoint
       //             3) NodeIds at level n + 1 are deterministic.  The child nodes at the next level's nodeId is 2 * nodeId -1 for the
       //                left node, and 2 * nodeId for the right node.
-      branchVals := JOIN(levelBranches, xD, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id AND LEFT.number = RIGHT.number,
+      branchVals := JOIN(levelBranches, x_D, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id AND LEFT.number = RIGHT.number,
                           TRANSFORM({TreeNodeDat, BOOLEAN branchLeft},
                                       SELF.branchLeft :=  ((LEFT.isOrdinal AND RIGHT.value <= LEFT.value) OR
                                                           ((NOT LEFT.isOrdinal) AND RIGHT.value = LEFT.value)),
@@ -288,7 +412,6 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     selectedLeafs0 := LOOP(rootBranches, LEFT.number>0, EXISTS(ROWS(LEFT)),
                           loopBody(ROWS(LEFT), COUNTER));
     selectedLeafs := selectedLeafs0 + rootLeafs;
-
     RETURN selectedLeafs;
   END; // GetLeafsForData
   /**
@@ -509,7 +632,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
                         minTreeNodes := MIN(GROUP, nodeCount),
                         maxTreeNodes := MAX(GROUP, nodeCount),
                         avgTreeNodes := AVE(GROUP, nodeCount),
-                        totalNodes := SUM(GROUP, nodeCount)});
+                        totalNodes := SUM(GROUP, nodeCount)}, wi);
     leafSumm := TABLE(leafStats, {wi, treeCount := COUNT(GROUP),
                         avgLeafs := AVE(GROUP, nodeCount),
                         minSupport := MIN(GROUP, totSupt),

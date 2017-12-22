@@ -17,6 +17,9 @@ IMPORT ML_Core.Types;
 numTrees := 20;
 maxDepth := 255;
 numFeatures := 0; // Zero is automatic choice
+nonSequentialIds := TRUE; // True to renumber ids, numbers and work-items to test
+                            // support for non-sequentiality
+numWIs := 2;     // The number of independent work-items to create
 
 t_Discrete := Types.t_Discrete;
 t_FieldReal := Types.t_FieldReal;
@@ -32,10 +35,22 @@ ML_Core.ToField(trainDat, trainNF);
 ML_Core.ToField(testDat, testNF);
 // Take out the first field from training set (Elevation) to use as the target value.  Re-number the other fields
 // to fill the gap
-X := PROJECT(trainNF(number != 1), TRANSFORM(NumericField,
-        SELF.number := LEFT.number -1, SELF := LEFT));
-Y := PROJECT(trainNF(number = 1), TRANSFORM(NumericField,
-        SELF.number := 1, SELF := LEFT));
+X0 := PROJECT(trainNF(number != 1), TRANSFORM(NumericField,
+        SELF.number := IF(nonSequentialIds, (5*LEFT.number -1), LEFT.number -1),
+        SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+        SELF := LEFT));
+Y0 := PROJECT(trainNF(number = 1), TRANSFORM(NumericField,
+        SELF.number := 1,
+        SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+        SELF := LEFT));
+// Generate multiple work items
+X := NORMALIZE(X0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
+Y := NORMALIZE(Y0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
+
 IMPORT Python;
 SET OF UNSIGNED incrementSet(SET OF UNSIGNED s, INTEGER increment) := EMBED(Python)
   outSet = []
@@ -62,10 +77,21 @@ nodes := SORT(F.Model2Nodes(mod), wi, treeId, level, nodeId);
 OUTPUT(nodes, {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, ir}, NAMED('TreeNodes'));
 modStats := F.GetModelStats(mod);
 OUTPUT(modStats, NAMED('ModelStatistics'));
-Xtest := PROJECT(testNF(number != 1), TRANSFORM(NumericField,
-                    SELF.number := LEFT.number - 1, SELF := LEFT));
-Ycmp := PROJECT(testNF(number = 1), TRANSFORM(NumericField, SELF.number := 1, SELF := LEFT));
-
+Xtest0 := PROJECT(testNF(number != 1), TRANSFORM(NumericField,
+                    SELF.number := IF(nonSequentialIds, (5*LEFT.number -1), LEFT.number -1),
+                    SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+                    SELF := LEFT));
+Ycmp0 := PROJECT(testNF(number = 1), TRANSFORM(NumericField,
+                    SELF.number := 1,
+                    SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+                    SELF := LEFT));
+// Generate multiple work items
+Xtest := NORMALIZE(Xtest0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
+Ycmp := NORMALIZE(Ycmp0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
 Yhat := F.Predict(Xtest, mod);
 
 cmp := JOIN(Yhat, Ycmp, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id, TRANSFORM({UNSIGNED wi, UNSIGNED id, REAL y, REAL yhat, REAL err, REAL err2},
