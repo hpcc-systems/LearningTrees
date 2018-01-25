@@ -1,6 +1,7 @@
 /*##############################################################################
 ## HPCC SYSTEMS software Copyright (C) 2017 HPCC Systems®.  All rights reserved.
 ############################################################################## */
+
 IMPORT $ AS LT;
 IMPORT LT.LT_Types AS Types;
 IMPORT ML_Core;

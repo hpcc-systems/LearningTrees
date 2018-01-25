@@ -19,6 +19,9 @@ numTrees := 20;
 maxDepth := 255;
 numFeatures := 0; // Zero is automatic choice
 balanceClasses := FALSE;
+nonSequentialIds := TRUE; // True to renumber ids, numbers and work-items to test
+                            // support for non-sequentiality
+numWIs := 2;     // The number of independent work-items to create
 
 t_Discrete := Types.t_Discrete;
 t_FieldReal := Types.t_FieldReal;
@@ -32,8 +35,22 @@ numCols := CovTypeDS.numCols;
 
 ML_Core.ToField(trainDat, trainNF);
 ML_Core.ToField(testDat, testNF);
-X := PROJECT(trainNF(number != 52), TRANSFORM(LEFT));
-Y := PROJECT(trainNF(number = 52), TRANSFORM(DiscreteField, SELF.number := 1, SELF := LEFT));
+X0 := PROJECT(trainNF(number != 52), TRANSFORM(NumericField,
+        SELF.number := IF(nonSequentialIds, 5*LEFT.number, LEFT.number),
+        SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+        SELF := LEFT));
+Y0 := PROJECT(trainNF(number = 52), TRANSFORM(DiscreteField,
+        SELF.number := 1,
+        SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+        SELF := LEFT));
+// Generate multiple work items
+X := NORMALIZE(X0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
+Y := NORMALIZE(Y0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
+
 card0 := SORT(X, number, value);
 card1 := TABLE(card0, {number, value, valCnt := COUNT(GROUP)}, number, value);
 card2 := TABLE(card1, {number, featureVals := COUNT(GROUP)}, number);
@@ -54,8 +71,21 @@ Y_S := SORT(Y, value);
 classCounts0 := TABLE(Y, {wi, class := value, cnt := COUNT(GROUP)}, wi, value);
 classCounts := TABLE(classCounts0, {wi, classes := COUNT(GROUP)}, wi);
 
-Xtest := testNF(number != 52);
-Ycmp := PROJECT(testNF(number = 52), DiscreteField);
+Xtest0 :=  PROJECT(testNF(number != 52), TRANSFORM(NumericField,
+        SELF.number := IF(nonSequentialIds, 5*LEFT.number, LEFT.number),
+        SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+        SELF := LEFT));
+Ycmp0 := PROJECT(testNF(number = 52), TRANSFORM(DiscreteField,
+        SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
+        SELF := LEFT));
+// Generate multiple work items
+Xtest := NORMALIZE(Xtest0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
+Ycmp := NORMALIZE(Ycmp0, numWIs, TRANSFORM(RECORDOF(LEFT),
+          SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF := LEFT));
+
 classProbs := F.GetClassProbs(Xtest, mod, balanceClasses);
 OUTPUT(classProbs, NAMED('ClassProbabilities'));
 // OUTPUT(COUNT(classProbs), NAMED('CP_Size'));
@@ -63,7 +93,6 @@ Yhat := F.Classify(Xtest, mod, balanceClasses);
 
 cmp := JOIN(Yhat, Ycmp, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id, TRANSFORM({DiscreteField, t_Discrete cmpValue, UNSIGNED errors},
                   SELF.cmpValue := RIGHT.value, SELF.errors := IF(LEFT.value != RIGHT.value, 1, 0), SELF := LEFT));
-
 OUTPUT(cmp, NAMED('Details'));
 
 errStats := F.GetErrorStats(Xtest, Ycmp, mod, balanceClasses);

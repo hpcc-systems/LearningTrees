@@ -23,7 +23,14 @@ t_FieldReal := CTypes.t_FieldReal;
 t_NodeId := Types.t_NodeId;
 NumericField := CTypes.NumericField;
 
-// Module for Regression Forest
+/**
+  * Module for Regression Forest
+  *
+  * This module provides a Random Forest Regressor based on Breiman, 2001
+  * with extensions.
+  *
+  * See RF_Base for a description of the Theory of Operation of this module.
+  */
 EXPORT RF_Regression(DATASET(GenField) X_in=DATASET([], GenField),
                           DATASET(GenField) Y_In=DATASET([], GenField),
                           UNSIGNED numTrees=100,
@@ -264,11 +271,12 @@ EXPORT RF_Regression(DATASET(GenField) X_in=DATASET([], GenField),
   // Find the corresponding leaf node for each X sample given an expanded forest model (set of tree nodes)
   EXPORT DATASET(TreeNodeDat) GetLeafsForData(DATASET(TreeNodeDat) tNodes, DATASET(GenField) X) := FUNCTION
     // Distribute X by wi and id.
-    xD := DISTRIBUTE(X, HASH32(wi, id));
+    x_D := DISTRIBUTE(X, HASH32(wi, id));
     // Extend each root for each ID in X
     // Leave the extended roots distributed by wi, id.
     roots := tNodes(level = 1);
-    rootsExt := JOIN(xD(number=1), roots, LEFT.wi = RIGHT.wi, TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT),
+    allIds := DEDUP(x_D, wi, id, LOCAL);
+    rootsExt := JOIN(allIds, roots, LEFT.wi = RIGHT.wi, TRANSFORM(TreeNodeDat, SELF.id := LEFT.id, SELF := RIGHT),
                      MANY, LOOKUP);
     rootBranches := rootsExt(number != 0); // Roots are almost always branch (split) nodes.
     rootLeafs := rootsExt(number = 0); // Unusual but not impossible
@@ -284,7 +292,7 @@ EXPORT RF_Regression(DATASET(GenField) X_in=DATASET([], GenField),
       //             2) 'value' in the node is the value to split upon, while value in the data (X) is the value of that datapoint
       //             3) NodeIds at level n + 1 are deterministic.  The child nodes at the next level's nodeId is 2 * nodeId -1 for the
       //                left node, and 2 * nodeId for the right node.
-      branchVals := JOIN(levelBranches, xD, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id AND LEFT.number = RIGHT.number,
+      branchVals := JOIN(levelBranches, x_D, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id AND LEFT.number = RIGHT.number,
                           TRANSFORM({TreeNodeDat, BOOLEAN branchLeft},
                                       SELF.branchLeft :=  ((LEFT.isOrdinal AND RIGHT.value <= LEFT.value) OR
                                                           ((NOT LEFT.isOrdinal) AND RIGHT.value = LEFT.value)),

@@ -40,6 +40,14 @@ ClassProbs := Types.ClassProbs;
   * Nominal features should be identified by including their feature 'number'
   * in the set of 'nominalFields' in GetModel.
   *
+  * Notes on use of NumericField and DiscreteField layouts:
+  * - Work-item ids ('wi' field) are not required to be sequential, though they must be positive
+  *   numbers
+  * - Record Ids ('id' field) are not required to be sequential, though slightly faster performance
+  *   will result if they are sequential (i.e. 1 .. numRecords) for each work-item
+  * - Feature numbers ('number' field) are not required to be sequential, though slightly faster
+  *   performance will result if they are (i.e. 1 .. numFeatures) for each work-item
+  *
   * @param numTrees The number of trees to create as the forest for each work-item.
   *                 This defaults to 100, which is adequate for most cases.
   * @param featuresPerNode The number of features to choose among at each split in
