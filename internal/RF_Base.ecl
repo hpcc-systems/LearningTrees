@@ -7,7 +7,7 @@ IMPORT LT.LT_Types as Types;
 IMPORT ML_Core as ML;
 IMPORT ML.Types AS CTypes;
 IMPORT std.system.Thorlib;
-IMPORT LT.ndArray;
+IMPORT ML_Core.ModelOps2;
 
 GenField := Types.GenField;
 ModelStats := Types.ModelStats;
@@ -21,7 +21,7 @@ wiInfo := Types.wiInfo;
 TreeNodeDat := Types.TreeNodeDat;
 NumericField := CTypes.NumericField;
 DiscreteField := CTypes.DiscreteField;
-Layout_Model2 := Types.Layout_Model2;
+Layout_Model2 := CTypes.Layout_Model2;
 FeatureImportanceRec := Types.FeatureImportanceRec;
 
 /**
@@ -498,7 +498,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     */
   EXPORT DATASET(TreeNodeDat) Model2Nodes(DATASET(Layout_Model2) mod) := FUNCTION
     // Extract nodes from model as NumericField dataset
-    nfNodes := ndArray.ToNumericField(mod, [FM1.nodes]);
+    nfNodes := ModelOps2.ToNumericField(mod, [FM1.nodes]);
     // Distribute by wi and id for distributed processing
     nfNodesD := DISTRIBUTE(nfNodes, HASH32(wi, id));
     nfNodesG := GROUP(nfNodesD, wi, id, LOCAL);
@@ -530,7 +530,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     *
     */
   EXPORT Model2Samples(DATASET(Layout_Model2) mod) := FUNCTION
-    nfSamples := ndArray.ToNumericField(mod, [FM1.samples]);
+    nfSamples := ModelOps2.ToNumericField(mod, [FM1.samples]);
     samples := PROJECT(nfSamples, TRANSFORM(sampleIndx, SELF.treeId := LEFT.id,
                                             SELF.id := LEFT.number,
                                             SELF.origId := LEFT.value));
@@ -558,7 +558,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     // Make into a NumericField dataset
     nfMod := NORMALIZE(nodesExt, 11, makeMod(LEFT, COUNTER));
     // Insert at position [modInd.nodes] in the ndArray
-    mod := ndArray.FromNumericField(nfMod, [FM1.nodes]);
+    mod := ModelOps2.FromNumericField(nfMod, [FM1.nodes]);
     RETURN mod;
   END;
   /**
@@ -571,7 +571,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
                                                     SELF.id := LEFT.treeId,
                                                     SELF.number := LEFT.id,
                                                     SELF.value := LEFT.origId));
-    indexes := ndArray.FromNumericField(nfIndexes, [FM1.samples]);
+    indexes := ModelOps2.FromNumericField(nfIndexes, [FM1.samples]);
     return indexes;
   END;
   /**

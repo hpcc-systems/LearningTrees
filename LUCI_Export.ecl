@@ -32,12 +32,16 @@ IMPORT $ AS LT;
 IMPORT LT.LT_Types as Types;
 IMPORT Std.Str;
 IMPORT Std.System.ThorLib;
-IMPORT ML_core.Types as CTypes;
+IMPORT ML_Core;
+IMPORT ML_Core.Types as CTypes;
+IMPORT ML_Core.ModelOps2;
 
-Layout_Model2 := Types.Layout_Model2;
-LUCI_Rec := Types.LUCI_Rec;
+Layout_Model2 := CTypes.Layout_Model2;
+LUCI_Rec := CTypes.LUCI_Rec;
 LUCI_Scorecard := Types.LUCI_Scorecard;
 t_FieldNumber := CTypes.t_FieldNumber;
+FM := Types.Forest_Model;
+FM1 := FM.Ind1; // The first index of the model
 
 TreeNodeDat := Types.TreeNodeDat;
 
@@ -70,6 +74,11 @@ EXPORT DATASET(LUCI_Rec)
                  STRING model_name,
                  DATASET(LUCI_Scorecard) scorecards) := FUNCTION
   myLF := LT.LearningForest();
+  // Determine whether this is a Classification or Regression model.
+  // If it has class weights, it is Classification.
+  modCW := ModelOps2.Extract(mod, [FM1.classWeights]);
+  isClassification := COUNT(modCW) > 0;
+  aggregationType := IF(isClassification, 'MODE', 'AVE');
   // We're going to create a series of LUCI .csv records.
   // First we'll create the L1MD record
   model_type := IF(COUNT(scorecards) > 1, 'multi', 'single');
@@ -77,7 +86,7 @@ EXPORT DATASET(LUCI_Rec)
   // Now create the L2FO record for each scorecard, and the L2SE record for any scorecard
   // with a filter expression.
   LUCI_rec make_L2FO(LUCI_Scorecard sc) := TRANSFORM
-    SELF.line := 'L2FO,' + model_id + ',' + sc.scorecard_name + ',AVE,0,,N,N,,N,';
+    SELF.line := 'L2FO,' + model_id + ',' + sc.scorecard_name + ',' + aggregationType + ',0,,N,N,,N,';
   END;
   L2FO := PROJECT(scorecards, make_L2FO(LEFT));
   LUCI_rec make_L2SE(LUCI_Scorecard sc) := TRANSFORM

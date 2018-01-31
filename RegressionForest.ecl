@@ -4,6 +4,7 @@
 
 IMPORT ML_Core;
 IMPORT ML_Core.Types as CTypes;
+IMPORT ML_Core.interfaces AS Interfaces;
 IMPORT $ AS LT;
 IMPORT LT.LT_Types AS Types;
 IMPORT LT.internal AS int;
@@ -11,7 +12,8 @@ IMPORT LT.internal AS int;
 
 NumericField := CTypes.NumericField;
 DiscreteField := CTypes.DiscreteField;
-Layout_Model2 := Types.Layout_Model2;
+Layout_Model2 := CTypes.Layout_Model2;
+IRegression2 := Interfaces.IRegression2;
 
 /**
   * Regression Forest
@@ -60,26 +62,30 @@ Layout_Model2 := Types.Layout_Model2;
   *                 64, which is adequate for most purposes.  Increasing this value
   *                 for very large and complex problems my provide slightly greater
   *                 accuracy at the expense of much greater runtime.
+  * @param nominalFields An optional set of field 'numbers' that represent Nominal (i.e. unordered,
+  *                      categorical) values.  Specifying the nominal fields improves run-time
+  *                      performance on these fields and may improve accuracy as well.  Binary fields
+  *                      (fields with only two values) need not be included here as they can be
+  *                      considered either ordinal or nominal.  The default is to treat all fields as
+  *                      ordered.  Note that this feature should only be used if all of the independent
+  *                      data for all work-items use the same record format, and therefore have the same
+  *                      set of nominal fields.
   */
   EXPORT RegressionForest(UNSIGNED numTrees=100,
               UNSIGNED featuresPerNode=0,
-              UNSIGNED maxDepth=64) := MODULE(LT.LearningForest(numTrees, featuresPerNode, maxDepth))
+              UNSIGNED maxDepth=64,
+              SET OF UNSIGNED nominalFields=[]) := MODULE(LT.LearningForest(numTrees, featuresPerNode, maxDepth), IRegression2)
     /**
       * Fit a model that maps independent data (X) to its class (Y).
       *
       * @param X  The set of independent data in NumericField format
       * @param Y  The dependent variable in NumericField format.  The 'number' field is not used as
       *           only one dependent variable is currently supported. For consistency, it should be set to 1.
-      * @param nominalFields An optional set of field 'numbers' that represent Nominal (i.e. unordered,
-      *                      categorical) values.  Specifying the nominal fields improves run-time
-      *                      performance on these fields and my improve accuracy as well.  Binary fields
-      *                      (fields with only two values) need not be included here as they can be
-      *                      considered either ordinal or nominal.
       * @return Model in Layout_Model2 format describing the fitted forest.
       */
-    EXPORT  GetModel(DATASET(NumericField) X, DATASET(NumericField) Y, SET OF UNSIGNED nominalFields=[]) := FUNCTION
-      genX := NF2GenField(X, nominalFields);
-      genY := NF2GenField(Y);
+    EXPORT  GetModel(DATASET(NumericField) independents, DATASET(NumericField) dependents) := FUNCTION
+      genX := NF2GenField(independents, nominalFields);
+      genY := NF2GenField(dependents);
       myRF := int.RF_Regression(genX, genY, numTrees, featuresPerNode, maxDepth);
       model := myRF.GetModel;
       RETURN model;
@@ -91,30 +97,10 @@ Layout_Model2 := Types.Layout_Model2;
       * @param mod A model previously returned by GetModel in Layout_Model2 format.
       * @return A NumericField dataset that provides a prediction for each X record.
       */
-    EXPORT DATASET(NumericField) Predict(DATASET(NumericField) X, DATASET(Layout_Model2) mod) := FUNCTION
-      genX := NF2GenField(X);
+    EXPORT DATASET(NumericField) Predict(DATASET(Layout_Model2) model, DATASET(NumericField) observations) := FUNCTION
+      genX := NF2GenField(observations);
       myRF := int.RF_Regression();
-      predictions := myRF.Predict(genX, mod);
+      predictions := myRF.Predict(genX, model);
       RETURN predictions;
-    END;
-  /**
-    * Calculate R-squared, the Coefficient of Determination for the Regression
-    *
-    * R-squared varies from 0 to 1 (and in some cases negative).  R-squared of 1 indicates that the regression
-    * explains all of the variance in the data, while zero or negative indicates that the mean is a better
-    * predictor than the regression.
-    * @param X the independent data  in NumericField format.
-    * @param Y the dependent data in NumericField format.
-    * @param mod the model to be tested as previously returned from GetModel(...).  In Layout_Model2 format.
-    * @return a dataset indicating the R-squared for each work-item.
-    **/
-    EXPORT DATASET({UNSIGNED wi, REAL R2}) Rsquared(DATASET(NumericField) X,
-                                                          DATASET(NumericField) Y,
-                                                          DATASET(Layout_Model2) mod) := FUNCTION
-      genX := NF2GenField(X);
-      genY := NF2GenField(Y);
-      myRF := int.RF_Regression();
-      rsq := myRF.Rsquared(genX, genY, mod);
-      RETURN rsq;
     END;
   END;

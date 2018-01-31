@@ -61,11 +61,11 @@ ENDEMBED;
 nomFields1 := nominalFields;
 nomFields2 := incrementSet(nominalFields, -1);
 nomFields := IF(useRegression, nomFields2, nomFields1);
-F1 := LT.ClassificationForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth);
-F2 := LT.RegressionForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth);
+F1 := LT.ClassificationForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth, nominalFields:=nomFields1);
+F2 := LT.RegressionForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth, nominalFields:=nomFields2);
 
-mod1 := F1.GetModel(X1, Y1, nomFields1);
-mod2 := F2.GetModel(X2, Y2, nomFields2);
+mod1 := F1.GetModel(X1, Y1);
+mod2 := F2.GetModel(X2, Y2);
 
 mod := IF(useRegression, mod2, mod1);
 

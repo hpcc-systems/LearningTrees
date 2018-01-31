@@ -65,8 +65,8 @@ card1 := TABLE(card0, {number, value, valCnt := COUNT(GROUP)}, number, value);
 card2 := TABLE(card1, {number, featureVals := COUNT(GROUP)}, number);
 card := TABLE(card2, {cardinality := SUM(GROUP, featureVals)}, ALL);
 OUTPUT(card, NAMED('X_Cardinality'));
-F := LT.RegressionForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth);
-mod := F.GetModel(X, Y, nomFields);
+F := LT.RegressionForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth, nominalFields:=nominalFields);
+mod := F.GetModel(X, Y);
 OUTPUT(Y, NAMED('Ytrain'));
 Y_S := SORT(Y, value);
 classCounts0 := TABLE(Y, {wi, class := value, cnt := COUNT(GROUP)}, wi, value);
@@ -92,7 +92,7 @@ Xtest := NORMALIZE(Xtest0, numWIs, TRANSFORM(RECORDOF(LEFT),
 Ycmp := NORMALIZE(Ycmp0, numWIs, TRANSFORM(RECORDOF(LEFT),
           SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
           SELF := LEFT));
-Yhat := F.Predict(Xtest, mod);
+Yhat := F.Predict(mod, Xtest);
 
 cmp := JOIN(Yhat, Ycmp, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id, TRANSFORM({UNSIGNED wi, UNSIGNED id, REAL y, REAL yhat, REAL err, REAL err2},
                   SELF.y := RIGHT.value, SELF.yhat := LEFT.value, SELF.err2 := POWER(LEFT.value - RIGHT.value, 2),
@@ -100,12 +100,12 @@ cmp := JOIN(Yhat, Ycmp, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id, TRANSFORM({UN
 
 OUTPUT(cmp, NAMED('Details'));
 
-Yvar := VARIANCE(Ycmp, value);
-rsq := F.Rsquared(Xtest, Ycmp, mod);
-MSE := TABLE(cmp, {wi, mse := AVE(GROUP, err2), rmse := SQRT(AVE(GROUP, err2)), stdevY := SQRT(VARIANCE(GROUP, y))}, wi);
-ErrStats := JOIN(MSE, rsq, LEFT.wi = RIGHT.wi, TRANSFORM({mse, REAL R2}, SELF.R2 := RIGHT.R2, SELF := LEFT));
-
-OUTPUT(ErrStats, NAMED('ErrorStats'));
+//Yvar := VARIANCE(Ycmp, value);
+//rsq := F.Rsquared(Xtest, Ycmp, mod);
+//MSE := TABLE(cmp, {wi, mse := AVE(GROUP, err2), rmse := SQRT(AVE(GROUP, err2)), stdevY := SQRT(VARIANCE(GROUP, y))}, wi);
+//ErrStats := JOIN(MSE, rsq, LEFT.wi = RIGHT.wi, TRANSFORM({mse, REAL R2}, SELF.R2 := RIGHT.R2, SELF := LEFT));
+accuracy :=F.Accuracy(mod, Ycmp, Xtest);
+OUTPUT(accuracy, NAMED('Accuracy'));
 
 fi := F.FeatureImportance(mod);
 OUTPUT(fi, NAMED('FeatureImportance'));

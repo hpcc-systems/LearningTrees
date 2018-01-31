@@ -22,7 +22,8 @@ balanceClasses := FALSE;
 nonSequentialIds := TRUE; // True to renumber ids, numbers and work-items to test
                             // support for non-sequentiality
 numWIs := 2;     // The number of independent work-items to create
-
+maxRecs := 5000; // Note that this has to be less than or equal to the number of records
+                    // in CovTypeDS (currently 5000)
 t_Discrete := Types.t_Discrete;
 t_FieldReal := Types.t_FieldReal;
 DiscreteField := Types.DiscreteField;
@@ -35,11 +36,11 @@ numCols := CovTypeDS.numCols;
 
 ML_Core.ToField(trainDat, trainNF);
 ML_Core.ToField(testDat, testNF);
-X0 := PROJECT(trainNF(number != 52), TRANSFORM(NumericField,
+X0 := PROJECT(trainNF(number != 52 AND id <= maxRecs), TRANSFORM(NumericField,
         SELF.number := IF(nonSequentialIds, 5*LEFT.number, LEFT.number),
         SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
         SELF := LEFT));
-Y0 := PROJECT(trainNF(number = 52), TRANSFORM(DiscreteField,
+Y0 := PROJECT(trainNF(number = 52 AND id <= maxRecs), TRANSFORM(DiscreteField,
         SELF.number := 1,
         SELF.id := IF(nonSequentialIds, 5*LEFT.id, LEFT.id),
         SELF := LEFT));
@@ -57,8 +58,9 @@ card2 := TABLE(card1, {number, featureVals := COUNT(GROUP)}, number);
 card := TABLE(card2, {cardinality := SUM(GROUP, featureVals)}, ALL);
 OUTPUT(card, NAMED('X_Cardinality'));
 
-F := LT.ClassificationForest(numTrees, numFeatures, maxDepth);
-mod := F.GetModel(X, Y, nominalFields);
+F := LT.ClassificationForest(numTrees, numFeatures, maxDepth, nominalFields, balanceClasses);
+
+mod := F.GetModel(X, Y);
 OUTPUT(mod, NAMED('model'));
 nodes := SORT(F.Model2Nodes(mod), wi, treeId, level, nodeId);
 OUTPUT(CHOOSEN(nodes, 500), {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, ir}, ALL, NAMED('TreeNodes'));
@@ -84,21 +86,25 @@ Xtest := NORMALIZE(Xtest0, numWIs, TRANSFORM(RECORDOF(LEFT),
           SELF := LEFT));
 Ycmp := NORMALIZE(Ycmp0, numWIs, TRANSFORM(RECORDOF(LEFT),
           SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
+          SELF.number := 1;
           SELF := LEFT));
 
-classProbs := F.GetClassProbs(Xtest, mod, balanceClasses);
+classProbs := F.GetClassProbs(mod, Xtest);
 OUTPUT(classProbs, NAMED('ClassProbabilities'));
 // OUTPUT(COUNT(classProbs), NAMED('CP_Size'));
-Yhat := F.Classify(Xtest, mod, balanceClasses);
+Yhat := F.Classify(mod, Xtest);
 
 cmp := JOIN(Yhat, Ycmp, LEFT.wi = RIGHT.wi AND LEFT.id = RIGHT.id, TRANSFORM({DiscreteField, t_Discrete cmpValue, UNSIGNED errors},
                   SELF.cmpValue := RIGHT.value, SELF.errors := IF(LEFT.value != RIGHT.value, 1, 0), SELF := LEFT));
 OUTPUT(cmp, NAMED('Details'));
 
-errStats := F.GetErrorStats(Xtest, Ycmp, mod, balanceClasses);
-OUTPUT(errStats, NAMED('Accuracy'));
+accuracy := F.Accuracy(mod, Ycmp, Xtest);
+OUTPUT(accuracy, NAMED('Accuracy'));
 
-confusion := F.ConfusionMatrix(Xtest, Ycmp, mod, balanceClasses);
+accuracyByClass := F.AccuracyByClass(mod, Ycmp, Xtest);
+OUTPUT(accuracyByClass, NAMED('AccuracyByClass'));
+
+confusion := F.ConfusionMatrix(mod, Ycmp, Xtest);
 OUTPUT(confusion, NAMED('ConfusionMatrix'));
 
 fi := F.FeatureImportance(mod);
