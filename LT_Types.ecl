@@ -4,7 +4,7 @@
 IMPORT $ AS LT;
 IMPORT ML_core;
 IMPORT ML_core.Types as CTypes;
-IMPORT LT.ndArray;
+
 t_Work_Item := CTypes.t_Work_Item;
 t_Count := CTypes.t_Count;
 t_RecordId := CTypes.t_RecordID;
@@ -15,8 +15,8 @@ t_TreeId := t_FieldNumber;
 Layout_Model := CTypes.Layout_Model;
 DiscreteField := CTypes.DiscreteField;
 NumericField := CTypes.NumericField;
-NumericArray := ndArray.NumericArray;
-t_index := ndArray.t_index;
+Field_Mapping := CTypes.Field_Mapping;
+t_index := CTypes.t_index;
 
 /**
   * Type definition module for Learning Trees.
@@ -24,14 +24,6 @@ t_index := ndArray.t_index;
 EXPORT LT_Types := MODULE
 
   EXPORT t_NodeId := t_FieldNumber;
-
-  /**
-    * New Model Layout.  Should eventually be moved to ML_Core.
-    *
-    * Model is stored as an N-Dimensional numeric array via the
-    * ndArray.NumericArray class.
-    */
-  EXPORT Layout_Model2 := NumericArray;
 
   /**
     * Definition of the meaning of the indexes of the Model's
@@ -56,9 +48,10 @@ EXPORT LT_Types := MODULE
       * Index 1 represents the category of data within the model
       */
     EXPORT Ind1 := MODULE
-      EXPORT t_index nodes := 1;
-      EXPORT t_index samples := 2;
-      EXPORT t_index classWeights := 3;
+      EXPORT t_index reserved := 1; // Reserved for future use
+      EXPORT t_index nodes := 2;
+      EXPORT t_index samples := 3;
+      EXPORT t_index classWeights := 4;
     END;
     /**
       * For tree node data (i.e. Ind1 = nodes), the following
@@ -268,17 +261,6 @@ EXPORT LT_Types := MODULE
     UNSIGNED uses;
   END;
 
-  // FieldName_Mapping is the format produced by ToField for field-name mapping.
-  // This should be moved to ML_Core.
-  EXPORT Field_Mapping := RECORD
-    STRING orig_name;      // The name of the field in the original layout
-    STRING assigned_name;  // The integer field number used in the ML algorithm
-  END;
-  // Luci Record -- A dataset of lines each containing a string
-  // This should be moved to ML_Core.
-  EXPORT LUCI_Rec := RECORD
-    STRING line;
-  END;
   /**
     * Structure used to describe the Scorecards for LUCI format export.
     *

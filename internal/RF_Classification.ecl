@@ -7,7 +7,7 @@ IMPORT LT.LT_Types AS Types;
 IMPORT ML_Core as ML;
 IMPORT ML.Types AS CTypes;
 IMPORT std.system.Thorlib;
-IMPORT LT.ndArray;
+IMPORT ML_Core.ModelOps2;
 
 GenField := Types.GenField;
 TreeNodeDat := Types.TreeNodeDat;
@@ -23,7 +23,7 @@ t_Discrete := CTypes.t_Discrete;
 Layout_Model := CTypes.Layout_Model;
 t_NodeId := Types.t_NodeId;
 DiscreteField := CTypes.DiscreteField;
-Layout_Model2 := Types.Layout_Model2;
+Layout_Model2 := CTypes.Layout_Model2;
 ClassProbs := Types.ClassProbs;
 
 /**
@@ -410,7 +410,7 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     *
     */
   EXPORT Model2ClassWeights(DATASET(Layout_Model2) mod) := FUNCTION
-    modCW := ndArray.Extract(mod, [FM1.classWeights]);
+    modCW := ModelOps2.Extract(mod, [FM1.classWeights]);
     cw := PROJECT(modCW, TRANSFORM(classWeightsRec, SELF.wi := LEFT.wi, SELF.classLabel := LEFT.indexes[1],
                                         SELF.weight := LEFT.value));
     RETURN cw;
@@ -444,8 +444,7 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     * used only for classification.
     * Adds the class weights, which are only used for classification
     *
-    * RF uses the Layout_Model2 format, which is implemented as an N-Dimensional
-    * numeric array (i.e. ndArray.NumericArray).
+    * RF uses the Layout_Model2 format
     *
     * See LT_Types for the format of the model
     *
@@ -455,7 +454,7 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     mod1 := Nodes2Model(nodes);
     mod2 := Indexes2Model;
     baseMod := mod1 + mod2;
-    naClassWeights := PROJECT(classWeights, TRANSFORM(ndArray.NumericArray, SELF.wi := LEFT.wi,
+    naClassWeights := PROJECT(classWeights, TRANSFORM(Layout_Model2, SELF.wi := LEFT.wi,
                                                         SELF.indexes := [FM1.classWeights, LEFT.classLabel],
                                                         SELF.value := LEFT.weight));
     mod := baseMod + naClassWeights;

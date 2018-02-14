@@ -64,6 +64,7 @@ mod := F.GetModel(X, Y);
 OUTPUT(mod, NAMED('Model'));
 modStats := F.GetModelStats(mod);
 OUTPUT(modStats, NAMED('ModelStatistics'));
+
 dsTest := DISTRIBUTE(SORT(NORMALIZE(dummy, numTestRecs, make_data(LEFT, COUNTER)), id, LOCAL), id);
 X1t := PROJECT(dsTest, TRANSFORM(NumericField, SELF.wi := 1, SELF.id := LEFT.id, SELF.number := 1,
                             SELF.value := LEFT.X1));
@@ -76,7 +77,7 @@ X3t := PROJECT(dsTest, TRANSFORM(NumericField, SELF.wi := 1, SELF.id := LEFT.id,
 Xt := X1t + X2t + X3t;
 Ycmp := PROJECT(dsTest, TRANSFORM(NumericField, SELF.wi := 1, SELF.id := LEFT.id, SELF.number := 1,
                             SELF.value := LEFT.Y));
-Yhat0 := F.Predict(Xt, mod);
+Yhat0 := F.Predict(mod, Xt);
 Yhat := DISTRIBUTE(SORT(PROJECT(Yhat0, TRANSFORM(NumericField, SELF := LEFT)), id, LOCAL),  id);
 
 dseRec := RECORD(dsRec)
@@ -95,9 +96,5 @@ dsCmp := SORT(JOIN(dsTest, Yhat, LEFT.id = RIGHT.id, dseFromXY(LEFT, RIGHT), LOC
 
 OUTPUT(dsCmp, NAMED('Details'));
 
-Yvar := VARIANCE(Ycmp, value);
-rsq := F.Rsquared(Xt, Ycmp, mod);
-MSE := TABLE(dsCmp, {wi, mse := AVE(GROUP, err2), rmse := SQRT(AVE(GROUP, err2)), stdevY := SQRT(VARIANCE(GROUP, y))}, wi);
-ErrStats := JOIN(MSE, rsq, LEFT.wi = RIGHT.wi, TRANSFORM({mse, REAL R2}, SELF.R2 := RIGHT.R2, SELF := LEFT));
-
-OUTPUT(ErrStats, NAMED('ErrorStats'));
+accuracy := F.Accuracy(mod, Ycmp, Xt);
+OUTPUT(Accuracy, NAMED('Accuracy'));

@@ -12,7 +12,7 @@ IMPORT LT.internal AS int;
 GenField := Types.GenField;
 DiscreteField := CTypes.DiscreteField;
 NumericField := CTypes.NumericField;
-Layout_Model2 := Types.Layout_Model2;
+Layout_Model2 := CTypes.Layout_Model2;
 ModelStats := Types.ModelStats;
 TreeNodeDat := Types.TreeNodeDat;
 

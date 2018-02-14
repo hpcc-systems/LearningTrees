@@ -88,7 +88,7 @@ OUTPUT(Ye, NAMED('Y_train'));
 
 F := LT.ClassificationForest(numTrees, numVarsPerTree);
 
-mod := F.GetModel(Xe, Ye, nominals);
+mod := F.GetModel(Xe, Ye);
 
 // With this line it runs fine.
 //mod := F.GetModel(X, Y, nominals);
@@ -110,12 +110,11 @@ X3t := PROJECT(dsTest, TRANSFORM(NumericField, SELF.wi := 1, SELF.id := LEFT.id,
 Xt := X1t + X2t + X3t;
 Ycmp := PROJECT(dsTest, TRANSFORM(DiscreteField, SELF.wi := 1, SELF.id := LEFT.id, SELF.number := 1,
                             SELF.value := LEFT.Y));
-Yhat0 := F.Classify(Xt, mod);
+Yhat0 := F.Classify(mod, Xt);
 Yhat := DISTRIBUTE(SORT(Yhat0, id, LOCAL),  id);
 OUTPUT(Yhat, NAMED('rawPredict'));
 
-errStats := F.GetErrorStats(Xt, Ycmp, mod);
-OUTPUT(errStats, NAMED('Accuracy'));
-
-confusion := F.ConfusionMatrix(Xt, Ycmp, mod);
+accuracy := F.Accuracy(mod, Ycmp, Xt);
+OUTPUT(accuracy, NAMED('Accuracy'));
+confusion := F.ConfusionMatrix(mod, Ycmp, Xt);
 OUTPUT(confusion, NAMED('ConfusionMatrix'));
