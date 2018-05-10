@@ -22,30 +22,37 @@ t_index := CTypes.t_index;
   * Type definition module for Learning Trees.
   */
 EXPORT LT_Types := MODULE
-
+  /**
+    * Type definition for the node id field representing a tree node's id
+    */
   EXPORT t_NodeId := t_FieldNumber;
 
   /**
-    * Definition of the meaning of the indexes of the Model's
-    * NumericArray.  Ind1 enumerates the first index, which
-    * is used to determine which type of data is stored.
-    * - nodes stores the list of tree nodes that describes the forest.
+    * Definition of the meaning of the indexes of the Model variables.
+    * <p>Ind1 enumerates the first index, which
+    * is used to determine which type of data is stored:<ul>
+    * <li>nodes stores the list of tree nodes that describes the forest.
     *         The second index is just the sequential number of the node
-    *         The third index is enumerated below (Ind3_nodes).
-    * - samples stores the set of sample indexes (i.e. ids) associated
+    *         The third index is enumerated below (see Ind3_nodes).</li>
+    * <li>samples stores the set of sample indexes (i.e. ids) associated
     *         with each treeId.
     *         The second index represents the treeId.  The third index
     *         represents the sample number. The value is the id of the
     *         sample in the original training dataset.
-    *         [<samples, <treeId>, <sampleNum>] -> origId
-    * - classWeights (ClassificationForest only) stores the weights associated
+    *         {samples, treeId, sampleNum} -> origId.</li>
+    * <li>classWeights (ClassificationForest only) stores the weights associated
     *         with each class label.  The second index represents the class
-    *         label.  The value is the weight.  [<classWeights>, <classLabel>] -> weight
-    *         Class weights are only stored for Classification Forests.
+    *         label.  The value is the weight.  {classWeights, classLabel} -> weight.
+    *         Class weights are only stored for Classification Forests.</li></ul>
     */
   EXPORT Forest_Model := MODULE
     /**
       * Index 1 represents the category of data within the model
+      *
+      * @value reserved = 1.  Reserved for future use.
+      * @value nodes = 2.  The set of tree nodes within the model.
+      * @value samples = 3. The particular record ids that are included in tree's sample .
+      * @value classWeights = 4.  The weights assigne to each class (for ClassificationForest only).
       */
     EXPORT Ind1 := MODULE
       EXPORT t_index reserved := 1; // Reserved for future use
@@ -59,8 +66,22 @@ EXPORT LT_Types := MODULE
       * of the tree-node.
       * Note that Ind1 indicates tree nodes, Ind2 represents the different nodes
       * and Ind3 defines the different fields.  For example, the treeId for the
-      * first node would be stored at [1,1,1].  These correspond to the persisted
+      * first node would be stored at [2,1,1].  These correspond to the persisted
       * fields of TreeNodeDat with similar names.
+      *
+      * @value treeID = 1.  The tree identifier.
+      * @value level = 2.  The level of the node within the tree.
+      * @value nodeId = 3.  The nodeId of this node within the tree.
+      * @value parentId = 4.  The parent node's nodeId.
+      * @value isLeft = 5.  Left / Right indicator of this node within it's parent's chilren.
+      * @value number = 6.  The field number to split on.
+      * @value value = 7.  The value to compare against.
+      * @value isOrd = 8.  Indicator of ordered vs categorical data.
+      * @value depend = 9.  The value to predict for samples in this leaf.
+      * @value support = 10.  The number of datapoints from the training data that reached
+      *                       this node.
+      * @value if = 11.  The 'impurity reduction' achieved by this branch.
+      *
       */
     EXPORT Ind3_Nodes := MODULE
       EXPORT t_index treeId := 1;
@@ -81,52 +102,70 @@ EXPORT LT_Types := MODULE
     * GenField extends NumericField by adding an isOrdinal field.  This
     * allows both Ordered and Nominal (Categorical) data to be held by the same record type.
     *
+    * @field wi The work-item identifier for this cell.
+    * @field id The record-identifier for this cell.
+    * @field number The field number (i.e. featureId) of this cell.
+    * @field value The numerical value of this cell.
+    * @field isOrdinal TRUE if this field represents ordered data.  FALSE if it is categorical.
+    * @see ML_Core.Types.NumericField.
     */
   EXPORT GenField := RECORD(NumericField)
     Boolean isOrdinal;
   END;
 
   /**
-    * Tree node data
-    * This is the major working structure for building the forest.
-    * For efficiency and uniformity, this record structure serves several purposes
+    * <p>This is the major working structure for building the forest.
+    * <p>For efficiency and uniformity, this record structure serves several purposes
     * as the forest is built:
-    * 1) It represents all of the X,Y data associated with each tree and node as the
-    *   forest is being built.  This case is recognized by id > 0 (i.e. it is a data point)
+    * <ul><li>It represents all of the X,Y data associated with each tree and node as the
+    *   forest is being built.  This case is recognized by id > 0 (i.e. it is a data point).
     *   wi, treeId, level, and NodeId represent the work-item and tree node with which the data is currently
     *         associated.
-    *         All data in a trees sample is originally assigned to the root node (level = 1, nodeId = 1)
-    *         of its associated tree.
-    *   id is the sample index in this trees data bootstrap sample
-    *   origId is the sample index in the original X data.
-    *   number is the field number from the X data
-    *   isOrdinal indicates whether this data is Ordinal (true) or Nominal (false)
-    *   value is the data value of this data point
-    *   depend is the Y (dependent) value associated with this data point
-    * 2) It represents the skeleton of the tree as the tree is built from the root down
+    *         All data in a tree's sample is originally assigned to the tree's root node (level = 1, nodeId = 1).
+    *   <ul><li>id is the sample index in this trees data bootstrap sample.</li>
+    *   <li>origId is the sample index in the original Independent(X) data.</li>
+    *   <li>number is the field number from the X data.</li>
+    *   <li>isOrdinal indicates whether this data is Ordinal (true) or Nominal (false).</li>
+    *   <li>value is the data value of this data point.</li>
+    *   <li>depend is the Dependent (Y) value associated with this data point.</li></ul></li>
+    * <li>It represents the skeleton of the tree as the tree is built from the root down
     *   and the data points are subsumed (summarized) by the evolving tree structure.
-    *   These cases can be identified by id = 0.
-    *   2a) It represents branch (split) nodes:
-    *       id = 0 -- All data was subsumed
-    *       number > 0 -- The original field number of the X variable on which to split
-    *       value -- the value on which to split
-    *       parentId -- The nodeId of the branch at the previous level that leads to this
-    *                   node.  Zero only for root.
-    *       level -- The distance from the root (root = 1)
-    *       support -- The number of data points that reach this node
-    *       ir -- The impurity reduction for this split
-    *   2b) It represents leaf nodes:
-    *       id = 0 -- All data was subsumed
-    *       number = 0 -- This discriminates a leaf from a branch node
-    *       depend has the Y value for that leaf
-    *       parentId has the nodeId of the branch node at the previous level
-    *       support has the count of samples that reached this leaf
-    *       level -- The depth of the node in the tree (root = 1)
-    * Each tree starts with all sampled data points assigned to the root node (i.e. level = 1, nodeId = 1)
+    *   These cases can be identified by id = 0.<ul>
+    *   <li>It represents branch (split) nodes:<ul>
+    *       <li>id = 0 -- All data was subsumed.</li>
+    *       <li>number > 0 -- The original field number of the Independent(X) variable on which to split.</li>
+    *       <li>value -- the value on which to split</li>
+    *       <li>parentId -- The nodeId of the branch at the previous level that leads to this
+    *                   node.  Zero only for root.</li>
+    *       <li>level -- The distance from the root (root = 1).</li>
+    *       <li>support -- The number of data points that reach this node.</li>
+    *       <li>ir -- The impurity reduction for this split.</li></ul></li>
+    *   <li>It represents leaf nodes:<ul>
+    *       <li>id = 0 -- All data was subsumed.</li>
+    *       <li>number = 0 -- This discriminates a leaf from a branch node.</li>
+    *       <li>depend has the Y value for that leaf.</li>
+    *       <li>parentId has the nodeId of the branch node at the previous level.</li>
+    *       <li>support has the count of samples that reached this leaf.</li>
+    *       <li>level -- The depth of the node in the tree (root = 1).</li></ul></li></ul>
+    * <p>Each tree starts with all sampled data points assigned to the root node (i.e. level = 1, nodeId = 1)
     * As the trees grow, data points are assigned to deeper branches, and eventually to leaf nodes, where
     * they are ultimately subsumed (summarized) and removed from the dataset.
-    * At the end of the forest growing process only the tree skeleton remains -- all the datapoints having
+    * <p>At the end of the forest growing process only the tree skeleton remains -- all the datapoints having
     * been summarized by the resulting branch and leaf nodes.
+    * @field treeId The unique id of the tree in the forest.
+    * @field nodeId The id of this node within the tree.
+    * @field parentId The node id of this node's parent.
+    * @field isLeft Indicates whether this node is the left child or the right child of the parent.
+    * @field wi The work item with which this record is associated.
+    * @field id The record id of the sample during tree construction.  Will be zero once the record has
+    *           been replaced by a skeleton node (i.e. branch or leaf).
+    * @field number The field number on which the branch splits
+    * @field value The value of the data field, or the splitValue for a branch node.
+    * @field level The level of the node within its tree.  Root is 1.
+    * @field origId The sample index (id) of the original X data that this sample came from.
+    * @field depend The dependent value associated with this id.
+    * @field support The number of data samples subsumed by this node.
+    * @field ir The 'impurity' reduction achieved by this branch.
     */
   EXPORT TreeNodeDat := RECORD
     t_TreeID treeId;
@@ -142,8 +181,15 @@ EXPORT LT_Types := MODULE
   END;
 
   /**
-    * ClassProbs represent the probability that a given sample is of a given class
+    * The probability that a given sample is of a given class
     *
+    * @field wi The work-item identifier.
+    * @field id The record-id of the sample.
+    * @field class The class label.
+    * @field cnt The number of trees that predicted this class label.
+    * @field prob The percentage of trees that assigned this class label,
+    *             which is a rough stand-in for the probability that the label
+    *             is correct.
     */
   EXPORT ClassProbs := RECORD
     t_Work_Item wi;  // Work-item id
@@ -157,6 +203,14 @@ EXPORT LT_Types := MODULE
 
   /**
     * NodeSummary provides information to identify a given tree node
+    *
+    * @field wi The work-item id for this node.
+    * @field treeId The tree identifier within this work-item.
+    * @field nodeId The node within the tree and work-item.
+    * @field parentId The nodeId of this nodes parent node.
+    * @field isLeft Boolean indicator of whether this is the Left child (TRUE) or
+    *         Right child (FALSE) of the parent.
+    * @field support The number of data samples that reached this node.
     */
   EXPORT NodeSummary := RECORD
     t_Work_Item wi;
@@ -169,7 +223,15 @@ EXPORT LT_Types := MODULE
     t_RecordId support;   // The number of data samples reaching this node.
   END;
   /**
-    * SplitDat is used to hold information about a potential split
+    * SplitDat is used to hold information about a potential split.
+    * It is based on the NodeSummary record type above.  It adds the following fields
+    *
+    * @field number The field number of the Independent data that is being used to split.
+    * @field splitVal The value by which to split the data.
+    * @field isOrdinal TRUE indicates that it is an ordered value and will use a
+    *                  greater-than-or-equal split (i.e. value >= splitVal).
+    *                  FALSE indicates that the values are nominal
+    *                  (i.e. categorical) and will use an equal-to split (i.e. value = splitVal)
     */
   EXPORT SplitDat := RECORD(NodeSummary)
     t_FieldNumber number;  // This is the field number that is being split
@@ -181,20 +243,33 @@ EXPORT LT_Types := MODULE
 
   /**
     * NodeImpurity carries identifying information for a node as well as its impurity level
+    * It is based on the NodeSummary record type above, but includes an assessment of the
+    * 'impurity' of the data at this node (i.e. GINI, Variance, Entropy).
+    *
+    * @field impurity The level of impurity at the given node.  Zero is most pure.
     */
   EXPORT NodeImpurity := RECORD(NodeSummary)
     t_FieldReal impurity;  // The level of impurity of the given node.  Zero is most pure.
   END;
 
   /**
-    * wiInfo provides a summary of each work item
+    * Provides a summary of each work item for use in building the forest.
+    *
+    * @field wi The work-item identifier.
+    * @field numSamples The number of samples within this work-item
+    * @field numFeatures The number of features (i.e. number fields in the Independent
+    *                    data for this work-item.
+    * @field featuresPerNode The number of features to be randomly chosen at each level
+    *                         of tree building.  It is a function of, the user parameter
+    *                         'featuresPerNode' and the number of features in the work-item
+    *                         numFeatures.
     */
   EXPORT wiInfo := RECORD
     t_Work_Item   wi;               // Work-item Id
     t_RecordId    numSamples;       // Number of samples for this wi's data
     t_FieldNumber numFeatures;      // Number of features for this wi's data
     t_Count       featuresPerNode;  // Features per node may be different for each work-item
-                                    //   because it is base on numFeatures as well as the
+                                    //   because it is based on numFeatures as well as the
                                     //   featuresPerNodeIn parameter to the module.
   END;
   /**
@@ -216,9 +291,9 @@ EXPORT LT_Types := MODULE
     *                   that arrived at a given leaf node
     * @field maxSupport The maximum sum of support for all trees
     * @field agvSupport The average sum of support for all trees
-    * @field avgSupportPerLeaf The average number of datapoints per
+    * @field avgSupportPerLeaf The average number of data points per
     *                     leaf across the forest
-    * @field maxSupportPerLeaf The maximum datapoints at any single
+    * @field maxSupportPerLeaf The maximum data points at any single
     *                     leaf across the forest
     * @field avgLeafDepth The average depth for all leaf nodes
     *                     for all trees
@@ -242,17 +317,15 @@ EXPORT LT_Types := MODULE
     UNSIGNED maxSupportPerLeaf;
     REAL avgLeafDepth;
     UNSIGNED minLeafDepth;
-
   END; // ModelStats
   /**
     * Feature Importance Record
-    *
-    * Describes the importance of each feature
-    * @field wi The work-item associated with this information
-    * @field number The feature number
+    * describes the importance of each feature.
+    * @field wi The work-item associated with this information.
+    * @field number The feature number.
     * @field importance The 'importance' metric.  Higher value is more
     *                   important.
-    * @field uses The number of times the feature was used in the forest
+    * @field uses The number of times the feature was used in the forest.
     */
   EXPORT FeatureImportanceRec := RECORD
     t_Work_Item wi;
@@ -262,15 +335,29 @@ EXPORT LT_Types := MODULE
   END;
 
   /**
+    * ClassWeightsRecord holds the weights associated with each
+    * class label.
+    *
+    * @field wi The work-item.
+    * @field classLabel The subject class label.
+    * @field weight The weight associated with this class label.
+    **/
+  EXPORT ClassWeightsRec := RECORD
+    t_work_item wi;
+    t_Discrete classLabel;
+    t_FieldReal weight;
+  END;
+
+  /**
     * Structure used to describe the Scorecards for LUCI format export.
     *
     * For a single scorecard model, a single LUCI_Scorecard record is used.
     * For multiple scorecards, one record is required per scorecard.
     * One L2SC or L2FO record will be generated per scorecard, and additionally
     * One L2SE record will be generated for each scorecard with a non-blank
-    * ‘filter_expr’.
+    * 'filter_expr'.
     *
-    * @field wi_num The work-item number on which to base this scorecard or ‘1’ if only one
+    * @field wi_num The work-item number on which to base this scorecard or '1' if only one
     *               work-item / scorecard us used.
     * @field scorecard_name The LUCI name for this scorecard.
     * @field filter_expr Optional -- An expression on the LUCI input dataset layout that selects

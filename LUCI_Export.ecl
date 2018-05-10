@@ -1,32 +1,5 @@
 /**
-  * Export a Learning Forest model to LUCI format
-  *
-  * LUCI is a LexisNexis proprietary mechanism for describing a model that can then
-  * be efficiently processed within an LN product.
-  *
-  * Note the following restrictions:
-  * 1) Regression Forest Only.  Classification Forests cannot be handle by LUCI at this
-  *    time because there is no support for aggregation by vote (mode).
-  * 2) This module produces a LUCI file that outputs the exact same Regression values
-  *    as the Regression Forest model.  LUCI allows some additional features that are
-  *    beyond the scope of this module.
-  *    If these features are needed, the resultant LUCI file may need to be hand edited
-  *    to achieve those results.  Examples of these features include:
-  *    - Defining Reason Code logic (L1MD record)
-  *    - Setting minimum and maximum bounds (L2FO record)
-  *    - Adding an increment value to the final results (L2FO)
-  *    - Setting a scaling formula to scale the final results (L2FO)
-  *    - Excluding certain input records (L1EX record)
-  *    - See the LUCI documentation for more info:
-  *          https://gitlab.ins.risk.regn.net/HIPIE/HIPIE_Plugins/wikis/LUCIfiles#l2se
-  * This module supports the following LUCI use cases:
-  * 1)  Single work-item / single scorecard.
-  * 2)  Work-items and corresponding scorecards represent training of different response
-  *     variables on (potentially) different subsets of the features in the LUCI input layout.
-  * 3)  Work-items and corresponding scorecards represent training of the same response variable
-  *     across subsets of the input data (e.g. one per country).  It is anticipated, though not
-  *     required, that the same subset of LUCI input layout features was used for training each subset.
-  *
+  * Export a Learning Forest model to LUCI format.
   */
 IMPORT $ AS LT;
 IMPORT LT.LT_Types as Types;
@@ -46,27 +19,48 @@ FM1 := FM.Ind1; // The first index of the model
 TreeNodeDat := Types.TreeNodeDat;
 
 /**
-  * Export a LUCI model
+  * Export a Learning Forest model to LUCI format.
   *
-  * Create a LUCI model based on a model as returned from
-  * RegressionForest.GetModel, as well as additional information provided
-  * within this interface.
-  * The following types of LUCI record are created:
-  * - A single L1MD record
-  * - One L2FO record per LUCI scorecard
-  * - One L2SE record per scorecard that includes a filter expression
-  * - One L3TN record per node for each tree in each forest (i.e. work-item).
-  * Note that scorecards in LUCI correspond to work-items in LearningForest.
+  * <p>LUCI is a LexisNexis proprietary mechanism for describing a model that can then
+  * be efficiently processed within an LN product.
   *
-  * @param mod The random forest model as returned from GetModel
-  * @param model_name The name of the LUCI model (see LUCI L1MD definition)
-  * @param model_id The id of the LUCI model (see LUCI L1MD definition)
-  * @param scorecards DATASET(LT_Types.LUCI_Scorecard) describing each
+  * <p>Note the following:<ul>
+  * <li>This module produces a LUCI file that outputs the exact same Regression values
+  *    as the Regression Forest model.  LUCI allows some additional features that are
+  *    beyond the scope of this module.
+  *    If these features are needed, the resultant LUCI file may need to be hand edited
+  *    to achieve those results.  Examples of these features include:<ul>
+  *    <li>Defining Reason Code logic (L1MD record)</li>
+  *    <li>Setting minimum and maximum bounds (L2FO record)</li>
+  *    <li>Adding an increment value to the final results (L2FO)</li>
+  *    <li>Setting a scaling formula to scale the final results (L2FO)</li>
+  *    <li>Excluding certain input records (L1EX record)</li>
+  *    <li>See the LUCI documentation for more info:
+  *          https://gitlab.ins.risk.regn.net/HIPIE/HIPIE_Plugins/wikis/LUCIfiles</li></ul></li>
+  * <li>This module supports the following LUCI use cases:<ul>
+  *     <li>Single work-item / single scorecard.</li>
+  *     <li>Work-items and corresponding scorecards represent training of different response
+  *     variables on (potentially) different subsets of the features in the LUCI input layout.</li>
+  *     <li>Work-items and corresponding scorecards represent training of the same response variable
+  *     across subsets of the input data (e.g. one per country).  It is anticipated, though not
+  *     required, that the same subset of LUCI input layout features was used for training each subset.</li></ul></li></ul>
+  * <p>The following types of LUCI record are created:<ul>
+  *   <li>A single L1MD record.</li>
+  *   <li>One L2FO record per LUCI scorecard.</li>
+  *   <li>One L2SE record per scorecard that includes a filter expression.</li>
+  *   <li>One L3TN record per node for each tree in each forest (i.e. work-item).</li></ul>
+  * <p>Note that scorecards in LUCI correspond to work-items in LearningForest.
+  *
+  * @param mod The random forest model as returned from GetModel.
+  * @param model_name The name of the LUCI model (see LUCI L1MD definition).
+  * @param model_id The id of the LUCI model (see LUCI L1MD definition).
+  * @param scorecards DATASET(LUCI_Scorecard) describing each
   *                   work-item in the model that will be exported as
   *                   a LUCI scorecard.
   * @return DATASET(LUCI_Rec) representing the lines of a LUCI .csv file.
   *         The caller is responsible for melding the lines into an actual
   *         .csv file and storing it in a given location.
+  * @see LT_Types.LUCI_Scorecard, LT_Types.LUCI_Rec
   */
 EXPORT DATASET(LUCI_Rec)
       LUCI_Export(DATASET(Layout_Model2) mod,
@@ -94,9 +88,9 @@ EXPORT DATASET(LUCI_Rec)
   END;
   L2SE := PROJECT(scorecards(filter_expr != ''), make_L2SE(LEFT));
   // Now create the L3TN records, one per tree node, which is the meat of the model.
-  // First compress the model to remove any single-child splits
+  // First compress the model to remove any single-child splits.
   cMod := myLF.CompressModel(mod);
-  // Transform the TreeNodes to a form compatible with LUCI
+  // Transform the TreeNodes to a form compatible with LUCI.
   // In the model, the tree nodes each contain a parentId and a isLeft indicator.
   // In a LUCI model, the tree nodes contain a leftChildId and rightChildId.
   nodes := myLF.model2nodes(cMod);
