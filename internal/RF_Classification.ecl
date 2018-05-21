@@ -25,6 +25,7 @@ t_NodeId := Types.t_NodeId;
 DiscreteField := CTypes.DiscreteField;
 Layout_Model2 := CTypes.Layout_Model2;
 ClassProbs := Types.ClassProbs;
+ClassWeightsRec := Types.ClassWeightsRec;
 
 /**
   * Classification Forest Module
@@ -41,11 +42,6 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
                           UNSIGNED maxDepth=255) := MODULE(int.RF_Base(X_in, Y_in, numTrees,
                                                             featuresPerNode, maxDepth))
   SHARED minImpurity := .0000001;   // Nodes with impurity less than this are considered pure.
-  SHARED classWeightsRec := RECORD
-    t_work_item wi;
-    t_Discrete classLabel;
-    t_FieldReal weight;
-  END;
   SHARED classWeights := FUNCTION
     minClassWeight := .25; // Offset so that no weight can approach zero.
     // The weight of each class is assigned as a logarithmic inverse of the class frequency

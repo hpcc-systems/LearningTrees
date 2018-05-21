@@ -20,14 +20,12 @@ IClassify2 := Interfaces.IClassify2;
 
 
 /**
-  * Classification Forest
-  *
-  * Classification using Random Forest.
-  * This module implements Random Forest classification as described by
+  * Classification using Random Forest algorithm.
+  * <p>This module implements Random Forest classification as described by
   * Breiman, 2001 with extensions.
   * (see https://www.stat.berkeley.edu/~breiman/randomforest2001.pdf)
   *
-  * Random Forests provide a very effective method for classification
+  * <p>Random Forests provide a very effective method for classification
   * with few assumptions about the nature of the data.  They are known
   * to be one of the best out-of-the-box methods as there are few assumptions
   * made regarding the nature of the data or its relationship to classes.
@@ -36,29 +34,37 @@ IClassify2 := Interfaces.IClassify2;
   * Random Forests inherently support multi-class problems.  Any number of
   * class labels can be used.
   *
-  * This implementation supports both Numeric (discrete or continuous) and
+  * <p>This implementation supports both Numeric (discrete or continuous) and
   * Nominal (unordered categorical values) for the independent (X) features.
   * There is therefore, no need to one-hot encode categorical features.
   * Nominal features should be identified by including their feature 'number'
   * in the set of 'nominalFields' in GetModel.
   *
-  * Notes on use of NumericField and DiscreteField layouts:
-  * - Work-item ids ('wi' field) are not required to be sequential, though they must be positive
-  *   numbers
-  * - Record Ids ('id' field) are not required to be sequential, though slightly faster performance
-  *   will result if they are sequential (i.e. 1 .. numRecords) for each work-item
-  * - Feature numbers ('number' field) are not required to be sequential, though slightly faster
-  *   performance will result if they are (i.e. 1 .. numFeatures) for each work-item
+  * <p>RegressionForest supports the Myriad interface meaning that multiple
+  * independent models can be computed with a single call (see ML_Core.Types
+  * for information on using the Myriad feature).
   *
-  * @param numTrees The number of trees to create as the forest for each work-item.
-  *                 This defaults to 100, which is adequate for most cases.
+  * <p>Notes on use of NumericField and DiscreteField layouts:
+  * <ul>
+  * <li>Work-item ids ('wi' field) are not required to be sequential, though they must be positive
+  *   numbers.  It is a good practice to assign wi = 1 when only one work-item is used.</li>
+  * <li>Record Ids ('id' field) are not required to be sequential, though slightly faster performance
+  *   will result if they are sequential (i.e. 1 .. numRecords) for each work-item.</li>
+  * <li>Feature numbers ('number' field) are not required to be sequential, though slightly faster
+  *   performance will result if they are (i.e. 1 .. numFeatures) for each work-item.</li>
+  * </ul>
+  *
+  * @param numTrees The number of trees to create in the forest for each work-item.
+  *                 This defaults to 100, which is adequate for most cases.  Increasing
+  *                 this parameter generally results in less variance in accuracy between
+  *                 runs, at the expense of greater run time.
   * @param featuresPerNode The number of features to choose among at each split in
   *                 each tree.  This number of features will be chosen at random
-  *                 from the full set of features.  The default is the square
+  *                 from the full set of features.  The default (0) uses the square
   *                 root of the number of features provided, which works well
   *                 for most cases.
   * @param maxDepth The deepest to grow any tree in the forest.  The default is
-  *                 64, which is adequate for most purposes.  Increasing this value
+  *                 100, which is adequate for most purposes.  Increasing this value
   *                 for very large and complex problems my provide slightly greater
   *                 accuracy at the expense of much greater runtime.
   * @param nominalFields An optional set of field 'numbers' that represent Nominal (i.e. unordered,
@@ -67,6 +73,9 @@ IClassify2 := Interfaces.IClassify2;
   *                      (fields with only two values) need not be included here as they can be
   *                      considered either ordinal or nominal.  The default is to treat all fields as
   *                      ordered.
+  *                      Note that this feature should only be used if all of the independent
+  *                      data for all work-items use the same record format, and therefore have the same
+  *                      set of nominal fields.
   * @param balanceClasses An optional Boolean parameter.  If true, it indicates that the voting among
   *                       trees should be biased inversely to the frequency of the class for which it
   *                       is voting.  This may help in scenarios where there are far more samples of
@@ -74,21 +83,22 @@ IClassify2 := Interfaces.IClassify2;
   */
   EXPORT ClassificationForest(UNSIGNED numTrees=100,
               UNSIGNED featuresPerNode=0,
-              UNSIGNED maxDepth=64,
+              UNSIGNED maxDepth=100,
               SET OF UNSIGNED nominalFields=[],
               BOOLEAN balanceClasses=FALSE) := MODULE(LT.LearningForest(numTrees, featuresPerNode, maxDepth), IClassify2)
     /**
-      * Fit a model that maps independent data (X) to its class (Y).
+      * Fit and return a model that maps independent data (X) to its predicted class (Y).
       *
-      * @param independents  The set of independent data in NumericField format
-      * @param Y  dependents The set of classes in DiscreteField format that correspond to the independent data
+      * @param independents  The set of independent data in NumericField format.
+      * @param dependents The set of classes in DiscreteField format that correspond to the independent data
       *           i.e. same 'id'.
       * @param nominalFields An optional set of field 'numbers' that represent Nominal (i.e. unordered,
       *                      categorical) values.  Specifying the nominal fields improves run-time
       *                      performance on these fields and my improve accuracy as well.  Binary fields
       *                      (fields with only two values) need not be listed here as they can be
-      *                      considered either ordinal or nominal.
+      *                      considered either ordinal or nominal.  Example: [3,5,7].
       * @return Model in Layout_Model2 format describing the fitted forest.
+      * @see ML_Core.Types.NumericField, ML_Core.Types.DiscreteField, ML_Core.Types.Layout_Model2
       */
     EXPORT DATASET(Layout_Model2) GetModel(DATASET(NumericField) independents, DATASET(DiscreteField) dependents) := FUNCTION
       genX := NF2GenField(independents, nominalFields);
@@ -100,9 +110,10 @@ IClassify2 := Interfaces.IClassify2;
     /**
       * Classify a set of data points using a previously fitted model
       *
-      * @param model A model previously returned by GetModel in Layout_Model2 format
-      * @param observations The set of independent data to classify in NumericField format
-      * @return A DiscreteField dataset that indicates the class of each item in observations.
+      * @param model A model previously returned by GetModel in Layout_Model2 format.
+      * @param observations The set of independent data to classify in NumericField format.
+      * @return A DiscreteField dataset that indicates the predicted class of each item
+      * in observations.
       */
     EXPORT DATASET(DiscreteField) Classify(DATASET(Layout_Model2) model, DATASET(NumericField) observations) := FUNCTION
       genX := NF2GenField(observations);
@@ -112,16 +123,17 @@ IClassify2 := Interfaces.IClassify2;
     END;
 
     /**
-      * Get class probabilities
+      * Calculate the 'probability' that each data point is in each class.
+      * <p>Probability is approximated by computing the proportion of trees that
+      * voted for each class for each data point, so should not be treated
+      * as a reliable measure of true probability.
       *
-      * Calculate the 'probability' that each datapoint is in each class.
-      * Probability is used loosely here, as the proportion of trees that
-      * voted for each class for each datapoint.
-      *
-      * @param model A model previously returned by GetModel in Layout_Model2 format
-      * @param observations The set of independent data to classify in NumericField format
+      * @param model A model previously returned by GetModel in Layout_Model2 format.
+      * @param observations The set of independent data to classify in NumericField format.
       * @return DATASET(ClassProbs), one record per datapoint (i.e. id) per class
       *         label.  Class labels with zero votes are omitted.
+      * @see LT_Types.ClassProbs
+      *
       */
     EXPORT DATASET(ClassProbs) GetClassProbs(DATASET(Layout_Model2) model, DATASET(NumericField) observations) := FUNCTION
       genX := NF2GenField(observations);
@@ -132,15 +144,19 @@ IClassify2 := Interfaces.IClassify2;
     END;
 
     /**
-      * Extract the set of class weights from the model
+      * Extract the set of class weights from the model.
+      * <p>Classes are weighted inversely proportional to their frequency in the
+      * training data.  <p>Note that the class weights are based on a non-linear
+      * 'proportion' to avoid excess weight for classes with very low frequency.
+      * <p>These weights are only used when the 'balanceClasses' option is TRUE.
       *
-      * @param mod A model as returned from GetModel
-      * @return DATASET(classWeightRec) representing weight for each class label
+      * @param mod A model as returned from GetModel.
+      * @return DATASET(ClassWeightRec) representing weight for each class label.
+      * @see LT_Types.ClassWeightRec
       */
     EXPORT  Model2ClassWeights(DATASET(Layout_Model2) mod) := FUNCTION
       myRF := int.RF_Classification();
       cw := myRF.Model2ClassWeights(mod);
       RETURN cw;
     END;
-
   END;
