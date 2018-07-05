@@ -4,8 +4,8 @@
 # To run:  python createForestDatafile.py > ..\datasets\CovTypeDS.ecl
 import sklearn.datasets
 
-trainSamples = 5000
-testSamples = 1000
+trainSamples = 1000
+testSamples = 500
 covtype = sklearn.datasets.fetch_covtype()
 data = covtype.data
 target = covtype.target

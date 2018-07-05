@@ -19,7 +19,7 @@ TreeNodeDat := Types.TreeNodeDat;
 /**
   * This is the base module for Random Forests.
   * It implements the Random Forest algorithms as described by Breiman, 2001
-  * (see https://www.stat.berkeley.edu/~breiman/randomforest2001.pdf)
+  * (see https://www.stat.berkeley.edu/~breiman/randomforest2001.pdf).
   *
   * @param numTrees The number of trees to create as the forest for each work-item.
   *                 This defaults to 100, which is adequate for most cases.

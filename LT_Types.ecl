@@ -26,9 +26,8 @@ EXPORT LT_Types := MODULE
     * Type definition for the node id field representing a tree node's id
     */
   EXPORT t_NodeId := t_FieldNumber;
-
   /**
-    * Definition of the meaning of the indexes of the Model variables.
+    * Definition of the meaning of the indexes of the Forest Model variables.
     * <p>Ind1 enumerates the first index, which
     * is used to determine which type of data is stored:<ul>
     * <li>nodes stores the list of tree nodes that describes the forest.
@@ -52,7 +51,7 @@ EXPORT LT_Types := MODULE
       * @value reserved = 1.  Reserved for future use.
       * @value nodes = 2.  The set of tree nodes within the model.
       * @value samples = 3. The particular record ids that are included in tree's sample .
-      * @value classWeights = 4.  The weights assigne to each class (for ClassificationForest only).
+      * @value classWeights = 4.  The weights assigned to each class (for ClassificationForest only).
       */
     EXPORT Ind1 := MODULE
       EXPORT t_index reserved := 1; // Reserved for future use
@@ -99,6 +98,29 @@ EXPORT LT_Types := MODULE
   END;
 
   /**
+    * Definition of the meaning of the indexes of the Gradient Boosting Model variables.
+    * <p>Ind1 enumerates the first index, which
+    * is used to determine which type of data is stored:<ul>
+    * <li>fModels stores the list of forest models that comprise the boosting
+    *         hierarchy.  Each of these models can be decomposed by the Forest
+    *         learning modules.</li>
+    * <li>Other values are reserved for future use.
+    */
+  EXPORT Bf_Model := MODULE
+    /**
+      * Index 1 represents the category of data within the model
+      *
+      * @value reserved = 1.  Reserved for future use.
+      * @value fModels = 2.  The set of forest models that comprise the boosting
+      *                       hierarchy.
+      */
+    EXPORT Ind1 := MODULE
+      EXPORT t_index reserved := 1; // Reserved for future use
+      EXPORT t_index fModels := 2;
+    END;
+  END;
+
+  /**
     * GenField extends NumericField by adding an isOrdinal field.  This
     * allows both Ordered and Nominal (Categorical) data to be held by the same record type.
     *
@@ -112,6 +134,7 @@ EXPORT LT_Types := MODULE
   EXPORT GenField := RECORD(NumericField)
     Boolean isOrdinal;
   END;
+
 
   /**
     * <p>This is the major working structure for building the forest.
@@ -166,6 +189,7 @@ EXPORT LT_Types := MODULE
     * @field depend The dependent value associated with this id.
     * @field support The number of data samples subsumed by this node.
     * @field ir The 'impurity' reduction achieved by this branch.
+    * @field observWeight The observation weight associated with this observation.
     */
   EXPORT TreeNodeDat := RECORD
     t_TreeID treeId;
@@ -177,9 +201,24 @@ EXPORT LT_Types := MODULE
     t_Discrete    origId;        // The sample index (id) of the original X data that this sample came from
     t_FieldReal   depend;        // Instance Dependent value
     t_RecordId   support:=0;    // Number of data samples subsumed by this node
-    t_FieldReal  ir;            // Impurity reduction at this node (branches only)
+    t_FieldReal  ir:=0;            // Impurity reduction at this node (branches only)
+    t_FieldReal  observWeight:=1; // Weight assigned to this observation
   END;
 
+  /**
+    * Main data structure for processing Boosted Forest.
+    * <p>The structure is the same as for random forests, but with an extra
+    * field gbLevel that represents the level of the gradient boosted forest
+    * nodes within the boosting hierarchy.
+    * <p>Each set of nodes representing a forest is organized hierarchically based
+    * on that field.
+    * <p>Each level of the Boosted Forest contains a random forest.  The
+    * results from each random forest are added together to get the final result
+    * for the GBF.
+    */
+  EXPORT BfTreeNodeDat := RECORD(TreeNodeDat)
+    UNSIGNED2 bfLevel;
+  END;
   /**
     * The probability that a given sample is of a given class
     *
@@ -317,6 +356,7 @@ EXPORT LT_Types := MODULE
     UNSIGNED maxSupportPerLeaf;
     REAL avgLeafDepth;
     UNSIGNED minLeafDepth;
+    UNSIGNED bfLevel := 1;
   END; // ModelStats
   /**
     * Feature Importance Record

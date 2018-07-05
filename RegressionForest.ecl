@@ -97,7 +97,7 @@ IRegression2 := Interfaces.IRegression2;
       RETURN model;
     END;
     /**
-      * Classify a set of data points using a previously fitted model.
+      * Predict a set of data points using a previously fitted model.
       *
       * @param mod A model previously returned by GetModel in Layout_Model2 format.
       * @param observations The set of independent data in NumericField format.

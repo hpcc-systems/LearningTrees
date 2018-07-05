@@ -23,6 +23,7 @@ NumericField := CTypes.NumericField;
 DiscreteField := CTypes.DiscreteField;
 Layout_Model2 := CTypes.Layout_Model2;
 FeatureImportanceRec := Types.FeatureImportanceRec;
+nfNull := DATASET([], NumericField);
 
 /**
   * Base Module for Random Forest algorithms.  Modules for RF Classification or Regression
@@ -115,7 +116,9 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
               DATASET(GenField) Y_In=DATASET([], GenField),
               UNSIGNED numTrees=100,
               UNSIGNED featuresPerNodeIn=0,
-              UNSIGNED maxDepth=255) := MODULE
+              UNSIGNED maxDepth=255,
+              DATASET(NumericField) observWeights=nfNull) := MODULE
+  SHARED haveObsWeights := EXISTS(observWeights);
   // Resequence ids to go from 1-numRecords.
   SHARED resequenceByWi(DATASET(GenField) dat) := FUNCTION
     // Dat should be evenly distributed at this point
@@ -136,9 +139,6 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
   END;
   SHARED autoBin := TRUE;
   SHARED autobinSize := 10;
-  SHARED allowNoProgress := TRUE;  // If FALSE, tree will terminate when no progess can be made on any
-                                   // feature.  For RF, should be TRUE since it may get a better choice
-                                   // of features at the next level.
   SHARED maxU4 := 4294967295; // Maximum value for an Unsigned 4
   SHARED maxR8 := 1.797693e+308; // Maximum value for a REAL8
   SHARED autobinSizeScald := autobinSize * maxU4; // Scaled auto-bin size for efficiency
@@ -187,7 +187,11 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
   featureMap0 := PROJECT(allFeaturesG, TRANSFORM(GenField, SELF.id := COUNTER, SELF := LEFT));
   SHARED featureMap := UNGROUP(featureMap0);
   SHARED needFeatureRenumbering := COUNT(featureMap) != SUM(wiFeatures, maxNum);
-
+  SHARED allowNoProgress := IF(featuresPerNodeIn < MAX(featureMap, id), TRUE, FALSE);
+                                   // If FALSE, tree will terminate when no progess can be made on any
+                                   // feature.  For RF, should be TRUE since it may get a better choice
+                                   // of features at the next level.  Set FALSE if featuresPerNode >= numFeatures,
+                                   // since we will always be choosing from all features.
   // Data structure to hold the sample indexes (i.e Bootstrap Sample) for each treeId
   SHARED sampleIndx := RECORD
     t_TreeID treeId;
@@ -213,9 +217,17 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
   // Distribute by treeId to create the samples in parallel
   treeDummyD := DISTRIBUTE(treeDummy, treeId);
   // Now generate samples for each treeId in parallel
-  SHARED treeSampleIndx :=NORMALIZE(treeDummyD, maxSampleSize, TRANSFORM(sampleIndx,
-                            SELF.origId := (RANDOM()%maxSampleSize) + 1, SELF.id := COUNTER, SELF := LEFT));
-
+  // In the event that there is only one tree in the forest, the best result will
+  // be gotten by using the full data (i.e. no sampling).
+  treeSampleIndxSampled := NORMALIZE(treeDummyD, maxSampleSize, TRANSFORM(sampleIndx,
+                            SELF.origId := (RANDOM()%maxSampleSize) + 1,
+                            SELF.id := COUNTER,
+                            SELF := LEFT));
+  treeSampleIndxNonSampled := NORMALIZE(treeDummyD, maxSampleSize, TRANSFORM(sampleIndx,
+                            SELF.origId := COUNTER,
+                            SELF.id := COUNTER,
+                            SELF := LEFT));
+  SHARED treeSampleIndx := IF(numTrees > 1, treeSampleIndxSampled, treeSampleIndxNonSampled);
   // Function to randomly select features to use for each level of the tree building.
   // Each node is assigned a random subset of the features.
   SHARED DATASET(TreeNodeDat) SelectVarsForNodes(DATASET(TreeNodeDat) nodeDat) := FUNCTION
@@ -308,9 +320,14 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
 
     // Now get the  corresponding Y (dependent) value
     // While we're at it, assign the data to the root (i.e. nodeId = 1, level = 1)
-    treeDat := JOIN(treeDat1D, Y, LEFT.wi = RIGHT.wi AND LEFT.origId=RIGHT.id,
-                        TRANSFORM(TreeNodeDat, SELF.depend := RIGHT.value, SELF.nodeId := 1, SELF.level := 1, SELF := LEFT),
+    treeDat2 := JOIN(treeDat1D, Y, LEFT.wi = RIGHT.wi AND LEFT.origId=RIGHT.id,
+                        TRANSFORM(TreeNodeDat, SELF.depend := RIGHT.value, SELF.nodeId := 1, SELF.level := 1,
+                        SELF.observWeight := 1.0, SELF := LEFT),
                         LOCAL);
+    treeDat2w := JOIN(treeDat2, observWeights, LEFT.wi = RIGHT.wi AND LEFT.origId = RIGHT.id,
+                      TRANSFORM(RECORDOF(LEFT), SELF.observWeight := IF(RIGHT.value > 0, RIGHT.value, 1.0),
+                                  SELF := LEFT), LEFT OUTER, LOOKUP);
+    treeDat := IF(haveObsWeights, treeDat2w, treeDat2);
     // At this point, we have one instance per tree  per sample, for each work-item, and each instance
     // includes the Y values for the selected indexes (i.e. depend)
     // TreeDat is distributed by work-item and sample id.
@@ -344,7 +361,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     // Localize all the data by wi and treeId
     rootsD := DISTRIBUTE(roots, HASH32(wi, treeId));
     // Grow the forest one level at a time.
-    treeNodes  := LOOP(rootsD, LEFT.id > 0, (COUNTER <= maxDepth) AND EXISTS(ROWS(LEFT)) , GrowForestLevel(ROWS(LEFT), COUNTER));
+    treeNodes  := LOOP(rootsD, LEFT.id > 0, EXISTS(ROWS(LEFT)(COUNTER <= maxDepth)) , GrowForestLevel(ROWS(LEFT), COUNTER));
     return SORT(treeNodes, wi, treeId, level, nodeId);
   END;
 
@@ -382,7 +399,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
       // We extend each id down the tree one level at a time, picking the correct next nodes
       // for that id at each branch.
       // Next nodes are returned -- both leafs and branches.  The leafs are filtered out by the LOOP,
-      // while the branches are send on to the next round.
+      // while the branches are sent on to the next round.
       // Ultimately, a leaf is returned for each id, which defines our final result.
       // Select the next nodes by combining the selected data field with each node
       // Note that:  1) we retain the id from the previous round, but the field number(number) is derived from the branch
@@ -453,7 +470,6 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
                         TRANSFORM({compressNodes},
                                   SELF.parentGuid := LEFT.parentGuid,
                                   SELF.isLeft := LEFT.isLeft,
-                                  SELF.depend := 666,  // Temp Diagnostic
                                   SELF := RIGHT), LOCAL);
       // Eliminate the compressNodes and the child nodes and replace with the new child nodes
       outLevelNodes := cNodes(level = tLevel AND (value != maxR8 OR number = 0));
@@ -648,6 +664,20 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     RETURN allStats;
   END;
   /**
+    * Feature Importance (intenal)
+    *
+    * Computes feature importance based on TreeNodeDat input
+    *
+    */
+  EXPORT FeatureImportanceNodes(DATASET(TreeNodeDat) nodes) := FUNCTION
+    treeCount := MAX(nodes, treeId);
+    featureStats := TABLE(nodes(number > 0), {wi, number, importance := SUM(GROUP, ir * support)/treeCount,
+                          uses := COUNT(GROUP)}, wi, number);
+    fi := SORT(PROJECT(featureStats, TRANSFORM(FeatureImportanceRec, SELF := LEFT)), wi, -importance);
+    RETURN fi;
+  END;
+
+  /**
     * Feature Importance
     *
     * Calculate feature importance using the Mean Decrease Impurity (MDI) method
@@ -661,10 +691,7 @@ EXPORT RF_Base(DATASET(GenField) X_in=DATASET([], GenField),
     */
   EXPORT FeatureImportance(DATASET(Layout_Model2) mod) := FUNCTION
     nodes := Model2Nodes(mod);
-    treeCount := MAX(nodes, treeId);
-    featureStats := TABLE(nodes(number > 0), {wi, number, importance := SUM(GROUP, ir * support)/treeCount,
-                          uses := COUNT(GROUP)}, wi, number);
-    fi := SORT(PROJECT(featureStats, TRANSFORM(FeatureImportanceRec, SELF := LEFT)), wi, -importance);
+    fi := FeatureImportanceNodes(nodes);
     RETURN fi;
   END;
   // Extended tree node record
