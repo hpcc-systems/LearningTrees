@@ -15,7 +15,7 @@ IMPORT LT.LT_Types;
 IMPORT ML_Core;
 IMPORT ML_Core.Types;
 
-numTrees := 20;
+numTrees := 100;
 maxDepth := 255;
 numFeatures := 0; // Zero is automatic choice
 balanceClasses := FALSE;
@@ -63,7 +63,7 @@ F := LT.ClassificationForest(numTrees, numFeatures, maxDepth, nominalFields, bal
 mod := F.GetModel(X, Y);
 OUTPUT(mod, NAMED('model'));
 nodes := SORT(F.Model2Nodes(mod), wi, treeId, level, nodeId);
-OUTPUT(CHOOSEN(nodes, 500), {wi, treeId, level, nodeId, parentId, isLeft, number, value, depend, support, ir}, ALL, NAMED('TreeNodes'));
+OUTPUT(nodes(treeId=1)[..3000], {wi, treeId, level, nodeId, parentId, isLeft, isOrdinal, number, value, depend, support, ir}, ALL, NAMED('TreeNodes'));
 modStats := F.GetModelStats(mod);
 OUTPUT(modStats, NAMED('ModelStatistics'));
 classWeights := F.Model2ClassWeights(mod);

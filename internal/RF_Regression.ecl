@@ -269,7 +269,7 @@ EXPORT RF_Regression(DATASET(GenField) X_in=DATASET([], GenField),
   END;  // GrowForestLevel
 
   // Find the corresponding leaf node for each X sample given an expanded forest model (set of tree nodes)
-  EXPORT DATASET(TreeNodeDat) GetLeafsForData(DATASET(TreeNodeDat) tNodes, DATASET(GenField) X) := FUNCTION
+  EXPORT DATASET(TreeNodeDat) GetLeafsForDatax(DATASET(TreeNodeDat) tNodes, DATASET(GenField) X) := FUNCTION
     // Distribute X by wi and id.
     x_D := DISTRIBUTE(X, HASH32(wi, id));
     // Extend each root for each ID in X
