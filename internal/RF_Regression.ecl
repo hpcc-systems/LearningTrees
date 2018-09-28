@@ -242,7 +242,10 @@ EXPORT RF_Regression(DATASET(GenField) X_in=DATASET([], GenField),
     fixupIds := SORT(JOIN(LR_nextLevel, newIds, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
                           LEFT.nodeId = RIGHT.nodeId,
                       TRANSFORM(TreeNodeDat, SELF.nodeId := RIGHT.newId, SELF := LEFT), LOCAL), wi, treeId, nodeId, LOCAL);
-    nextLevelDat := IF(treeLevel % 32 = 0, fixupIds, LR_nextLevel); // Recalculate every 32 levels to avoid overflow
+    maxNodeId := MAX(LR_nextLevel, nodeId);
+    // 2**48 is the optimum wrap point.  It allows us to reorganize as infrequently as possible, yet will fit into
+    // a Layout_Model2 field.
+    nextLevelDat := IF(maxNodeId >= POWER(2, 48), fixupIds, LR_nextLevel);
     // Now reduce each splitNode to a single skeleton node with no data.
     // For a split node (i.e. branch), we only use treeId, nodeId, number (the field number to split on),
     // value (the value to split on), support (# of data records), ir (impurity reduction), and parent-id
