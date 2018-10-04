@@ -23,7 +23,8 @@ IRegression2 := Interfaces.IRegression2;
   * <p>Boosted Forests (BF) are a combination of Gradient Boosted Trees (GBT) and
   * Random Forests (RF).  They provide accuracy at least as good as GBTs with the
   * ease of use of RFs.  They utilize Boosting to enhance the
-  * accuracy of Random Forests.  Layers of Random Forests are constructed, each
+  * accuracy of Random Forests.
+  * <p>Layers of Random Forests are constructed, each
   * attempting to compensate for the cumulative error of the forests before it.
   *
   * <p>A Boosted Forest with a forest size of 1 is
@@ -137,7 +138,7 @@ IRegression2 := Interfaces.IRegression2;
       RETURN dsOut;
     END;
     /**
-      * Fit a model that maps independent data (X) to its class (Y).
+      * Fit a model that maps independent data (X) to its prediction of (Y).
       *
       * @param independents  The set of independent data in NumericField format.
       * @param dependents  The dependent variable in NumericField format.  The 'number' field is not used as
