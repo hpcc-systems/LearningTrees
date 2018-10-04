@@ -25,7 +25,7 @@ EXPORT LT_Types := MODULE
   /**
     * Type definition for the node id field representing a tree node's id
     */
-  EXPORT t_NodeId := t_FieldNumber;
+  EXPORT t_NodeId := UNSIGNED8;
   /**
     * Definition of the meaning of the indexes of the Forest Model variables.
     * <p>Ind1 enumerates the first index, which

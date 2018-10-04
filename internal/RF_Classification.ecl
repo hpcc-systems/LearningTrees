@@ -63,138 +63,6 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
   // For nominal variables, the split is an equality split on one of the possible values for that variable
   // (i.e. split into = s and != s).  For ordinal variables, the split is an inequality (i.e. split into <= s and > s)
   // For each node, the split with the highest Information Gain (IG) is returned.
-  SHARED DATASET(SplitDat) findBestSplitx(DATASET(TreeNodeDat) nodeVarDat, DATASET(NodeImpurity) parentEntropy) := FUNCTION
-    // Calculate the Information Gain (IG) for each split.
-    // IG := Entropy(H) of Parent - Entropy(H) of the proposed split := H-parent - SUM(prob(child) * H-child) for each child group of the split
-    // IV := -SUM(Prob(x) * Log2(Prob(x)) for all values of X independent variable
-    // H := -SUM(Prob(y) * Log2(Prob(y)) for all values of Y dependent variable
-    // At this point, nodeVarDat has one record per node per selected feature per id
-    // Start by getting a list of all the values for each feature per node
-    featureVals := TABLE(nodeVarDat, {wi, treeId, nodeId, number, value, isOrdinal,
-                            cnt := COUNT(GROUP), REAL8 altVal := 0},
-                          wi, treeId, nodeId, number, value, isOrdinal, LOCAL);
-    // Set altVal to the midpoint between feature values (for ordered values) or 'value' otherwise.
-    // Note that the first value for each ordered feature will end up with altVal = value, since there
-    // is no LEFT record.  These will be eliminated later as they are not a valid split point.
-    featureValsS := SORT(featureVals, wi, treeId, nodeId, number, value, LOCAL);
-    featureValsM := ITERATE(featureValsS, TRANSFORM({featureVals},
-                              SELF.altVal := IF(RIGHT.wi = LEFT.wi AND LEFT.treeId = RIGHT.treeId AND
-                                              LEFT.nodeId = RIGHT.nodeId AND LEFT.number = RIGHT.number AND RIGHT.isOrdinal,
-                                              //LEFT.value + .00001, RIGHT.value),
-                                              (LEFT.value + RIGHT.value)/2, RIGHT.value),
-                              SELF := RIGHT), LOCAL);
-    // Calculate the number of values per feature per node
-    features := TABLE(featureVals, {wi, treeId, nodeId, number, isOrdinal, tot := SUM(GROUP, cnt),
-                            vals := COUNT(GROUP)},
-                          wi, treeId, nodeId, number, isOrdinal, LOCAL);
-    // We want to eliminate constant features (i.e. features with only one value for a node) from
-    // consideration.  But we have to guard against the case where all of the selected features are
-    // constant.  To do that, we save one constant feature per node in case we have to resort to
-    // using it later.
-    constantFeatures := features(vals = 1);
-    dummySplits := DEDUP(constantFeatures, wi, treeId, nodeId, LOCAL);
-    // Note that auto-binning occurs here (if enabled). If there are more values for
-    // a feature than autobinSize, randomly select potential split values with probability:
-    // 1/(number-of-values / autobinSize).
-    // Note: For efficiency, we use autobinSize * 2**32-1 so that we can directly compare to RANDOM()
-    //       without having to divide by 2**32-1
-    goodFeatures := features(vals > 1);
-    featureVals2 := JOIN(featureValsM, goodFeatures, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId
-                            AND LEFT.nodeId = RIGHT.nodeId AND LEFT.number = RIGHT.number,
-                          TRANSFORM({featureVals, REAL prop, REAL plogp},
-                                      SELF.prop := LEFT.cnt / RIGHT.tot,
-                                      SELF.plogp := P_Log_P(SELF.prop),
-                                      SELF.altVal := IF(LEFT.isOrdinal AND LEFT.value = LEFT.altVal OR
-                                        (autoBin = FALSE OR
-                                        RIGHT.vals < autobinSize OR
-                                        RANDOM() < autobinSizeScald/RIGHT.vals),
-                                        LEFT.altVal, SKIP),
-                                      SELF := LEFT), LOCAL);
-    // Filter the feature values so that we don't replicate data for the last data-point, except
-    // for nominal features with more than two values.  This is strictly an optimization, since for
-    // binary nominals, splitting on one value is the same as splitting on the other, and for ordinals,
-    // if the last value is used, it will not result in any information gain since all data will be
-    // to the left of the split.
-    //featureVals3 := featureVals2((NOT isOrdinal AND tot > 2) OR value != gmax);
-    // Replicate each datapoint for the node to every possible split for that node
-    // Mark each datapoint as being left or right of the split.  Handle both Ordinal and Nominal cases.
-    allSplitDat := JOIN(nodeVarDat, featureVals2, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId
-                        AND RIGHT.nodeId = LEFT.nodeId AND LEFT.number = RIGHT.number,
-                      TRANSFORM({TreeNodeDat, t_FieldReal splitVal},
-                                //SELF.splitVal := RIGHT.value,
-                                SELF.splitVal := RIGHT.altVal,
-                                SELF.isLEFT := IF((LEFT.isOrdinal AND LEFT.value <= SELF.splitVal)
-                                                  OR (NOT LEFT.isOrdinal AND LEFT.value = SELF.splitVal),TRUE, FALSE),
-                                SELF := LEFT), LOCAL);
-    // Calculate the entropy of the left and right groups of each split
-    // Group by value of Y (depend) for left and right splits
-    dependGroups := TABLE(allSplitDat, {wi, treeId, nodeId, number, splitVal, isLeft, depend,
-                              isOrdinal, UNSIGNED cnt := COUNT(GROUP),
-                              REAL weightSum := SUM(GROUP, observWeight)},
-                            wi, treeId, nodeId, number, splitVal, isLeft, depend, isOrdinal, LOCAL);
-    // Sum up the number of data points for left and right splits
-    dependSummary := TABLE(dependGroups, {wi, treeId, nodeId, number, splitVal, isLeft,
-                            REAL totWeights := SUM(GROUP, weightSum)},
-                            wi, treeId, nodeId, number, splitVal, isLeft, LOCAL);
-    // Calculate p_log_p for each Y value for left and right splits
-    dependRatios := JOIN(dependGroups, dependSummary,
-                       LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND LEFT.nodeId = RIGHT.nodeId AND
-                          LEFT.number = RIGHT.number AND LEFT.splitVal = RIGHT.splitVal
-                          AND LEFT.isLeft = RIGHT.isLeft,
-                       TRANSFORM({dependGroups, REAL prop, REAL plogp},
-                          SELF.prop := LEFT.weightSum / RIGHT.totWeights, SELF.plogp := P_Log_P(SELF.prop),
-                          SELF := LEFT),
-                          LOCAL);
-    // Sum the p_log_p's for each Y value to get the entropy of the left and right splits.
-    lr_entropies := TABLE(dependRatios, {wi, treeId, nodeId, number, splitVal, isLeft, isOrdinal, tot := SUM(GROUP, cnt),
-                            entropy := SUM(GROUP, plogp)},
-                          wi, treeId, nodeId, number, splitVal, isLeft, isOrdinal, LOCAL);
-    // Now calculate the weighted average of entropies of the two groups (weighted by number of datapoints in each)
-    // Note that 'tot' is number of datapoints for each side of the split.
-    entropies0 := TABLE(lr_entropies, {wi, treeId, nodeId, number, splitVal, isOrdinal,
-                               REAL totEntropy := SUM(GROUP, entropy * tot) / SUM(GROUP, tot)},
-                              wi, treeId, nodeId, number, splitVal, isOrdinal, LOCAL);
-    entropies := SORT(entropies0, wi, treeId, nodeId, totEntropy, LOCAL);
-    // We only care about the split with the lowest entropy for each tree node.  Since the parentEntropy
-    // is constant for a given tree node, the split with the lowest entropy will also be the split
-    // with the highest Information Gain.
-    lowestEntropies := DEDUP(entropies, wi, treeId, nodeId, LOCAL);
-    // Now calculate Information Gain
-    // In order to stop the tree-building process when there is no split that gives information-gain
-    // we set 'number' to zero to indicate that there is no best split when we hit that case.
-    // That happens when the data is not fully separable by the independent variables.
-    // Not that field ir (impurity reduction) is a generic term that encompasses ig.
-    // In the case where there are no valid (non constant) features to split on, we mark the node by
-    // setting 'number' to maxU4 so we can fix it up later.
-    ig := JOIN(lowestEntropies, parentEntropy, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
-                  LEFT.nodeId = RIGHT.nodeId,
-                TRANSFORM({entropies, t_NodeID parentId, BOOLEAN isLeft, REAL ir, t_RecordId support},
-                          SELF.ir := IF(LEFT.number > 0, RIGHT.impurity - LEFT.totEntropy, 0),
-                          SELF.number := IF(LEFT.number = 0 AND allowNoProgress, maxU4, IF(SELF.ir > 0 OR allowNoProgress,
-                                              LEFT.number, 0)),
-                          SELF.wi := RIGHT.wi,
-                          SELF.treeId := RIGHT.treeId,
-                          SELF.nodeId := RIGHT.nodeId,
-                          SELF.parentId := RIGHT.parentId,
-                          SELF.isLeft := RIGHT.isLeft,
-                          SELF.support := RIGHT.support,
-                          SELF := LEFT
-                          ),
-                RIGHT OUTER, LOCAL);
-    // Choose the split with the greatest information gain for each node.
-    // In the case where we had no non-constant splits we fill in with an arbitrary one of the constant
-    // splits so that we can keep the tree growing with the next set of selected features on the next
-    // round.  Otherwise, the tree would be truncated.
-    bestSplits := JOIN(ig, dummySplits, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
-                         LEFT.nodeId = RIGHT.nodeId,
-                         TRANSFORM(SplitDat,
-                            SELF.number := IF(LEFT.number = maxU4, RIGHT.number, LEFT.number),
-                            SELF.splitVal := IF(LEFT.number = maxU4, maxR8, LEFT.splitVal), // Force LEFT
-                            SELF.isOrdinal := IF(LEFT.number = maxU4, RIGHT.isOrdinal, LEFT.isOrdinal),
-                            SELF := LEFT), LEFT OUTER, LOCAL);
-
-    RETURN bestSplits;
-  END;
   SHARED DATASET(SplitDat) findBestSplit(DATASET(TreeNodeDat) nodeVarDat, DATASET(NodeImpurity) parentEntropy) := FUNCTION
     // Calculate the Information Gain (IG) for each split.
     // IG := Entropy(H) of Parent - Entropy(H) of the proposed split := H-parent - SUM(prob(child) * H-child) for each child group of the split
@@ -452,7 +320,10 @@ EXPORT RF_Classification(DATASET(GenField) X_in=DATASET([], GenField),
     fixupIds := SORT(JOIN(LR_nextLevel, newIds, LEFT.wi = RIGHT.wi AND LEFT.treeId = RIGHT.treeId AND
                           LEFT.nodeId = RIGHT.nodeId,
                       TRANSFORM(TreeNodeDat, SELF.nodeId := RIGHT.newId, SELF := LEFT), LOCAL), wi, treeId, nodeId, LOCAL);
-    nextLevelDat := IF(treeLevel % 32 = 0, fixupIds, LR_nextLevel); // Recalculate every 32 levels to avoid overflow
+    maxNodeId := MAX(LR_nextLevel, nodeId);
+    // 2**48 is the optimum wrap point.  It allows us to reorganize as infrequently as possible, yet will fit into
+    // a Layout_Model2 field.
+    nextLevelDat := IF(maxNodeId >= POWER(2, 48), fixupIds, LR_nextLevel);
     // Now reduce each splitNode to a single skeleton node with no data.
     // For a split node (i.e. branch), we only use treeId, nodeId, number (the field number to split on), value (the value to split on), and parent-id
     splitNodes := PROJECT(goodSplits, TRANSFORM(TreeNodeDat, SELF.level := treeLevel, SELF.wi := LEFT.wi,
