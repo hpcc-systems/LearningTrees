@@ -18,7 +18,7 @@
 // Updated version of CommonPrefixLenTest that outputs whether the correct
 // output is reached or what any differences were, plus additional inputs
 
-IMPORT $.^ AS LT;
+IMPORT LearningTrees AS LT;
 IMPORT LT.Internal AS int;
 
 inp1 := [1, 2, 3, 4, 5];

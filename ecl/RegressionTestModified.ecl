@@ -20,9 +20,9 @@
 // Modified version of the testCovTypeReg test file that works with the
 // OBT test system
 
-IMPORT $.^.test.datasets.CovTypeDS;
-IMPORT $.^ AS LT;
-IMPORT LT.LT_Types;
+IMPORT LearningTrees;
+IMPORT LearningTrees.test.datasets.CovTypeDS;
+IMPORT LearningTrees.LT_Types;
 IMPORT ML_Core;
 IMPORT ML_Core.Types;
 
@@ -68,7 +68,7 @@ RegressTest() := FUNCTION
 				SELF.wi := IF(nonSequentialIds, 5*COUNTER, COUNTER),
 				SELF := LEFT));
 
-	Forest := LT.RegressionForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth, nominalFields:=nominalFields);
+	Forest := LearningTrees.RegressionForest(numTrees:=numTrees, featuresPerNode:=numFeatures, maxDepth:=maxDepth, nominalFields:=nominalFields);
 	model := Forest.GetModel(Ind2, Dep2);
 
 	maxTestId := MIN(testNF, id) + maxTestRecs;
