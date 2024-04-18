@@ -15,6 +15,7 @@
     limitations under the License.
 ############################################################################## */
 
+#ONWARNING(30004, ignore); // Do not report execute time skew warning
 #ONWARNING(4550, ignore);
 
 // Modified version of the testCovTypeReg test file that works with the
