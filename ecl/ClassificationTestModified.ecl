@@ -15,6 +15,7 @@
     limitations under the License.
 ############################################################################## */
 
+#ONWARNING(30004, ignore); // Do not report execute time skew warning
 #ONWARNING(2007, ignore);
 #ONWARNING(4531, ignore);
 #ONWARNING(4550, ignore);
